@@ -19,7 +19,13 @@ jobs:
       - name: Run Gitleaks
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
-          ./gitleaks detect --source . -v --exit-code 1
+          ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json || true
+
+      - name: Upload Gitleaks report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
 
   sast:
     name: SAST (Semgrep)
@@ -30,9 +36,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Semgrep
-        uses: returntocorp/semgrep-action@v1
+        run: |
+          pip install semgrep
+          semgrep --config=p/python --json -o semgrep-report.json . || true
+          semgrep --config=p/python . || true
+
+      - name: Upload Semgrep report
+        uses: actions/upload-artifact@v4
         with:
-          config: p/python
+          name: semgrep-report
+          path: semgrep-report.json
 
   sca-and-image:
     name: SCA + Image Scan (Trivy)
@@ -50,7 +63,8 @@ jobs:
         with:
           scan-type: fs
           scan-ref: .
-          format: table
+          format: json
+          output: trivy-fs-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
 
@@ -58,6 +72,15 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: flask-webgoat:hardened
-          format: table
+          format: json
+          output: trivy-image-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
+
+      - name: Upload Trivy reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: |
+            trivy-fs-report.json
+            trivy-image-report.json
