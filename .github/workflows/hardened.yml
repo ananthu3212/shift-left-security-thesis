@@ -42,7 +42,7 @@ jobs:
       - name: Run Semgrep
         run: |
           pip install semgrep
-          semgrep --config=p/python --json -o semgrep-report.json .
+          semgrep --config=p/python --json -o semgrep-report.json --error .
           exit_code=$?
           exit $exit_code
 
