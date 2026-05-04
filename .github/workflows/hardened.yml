@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-secret-scanning:
+  secret-scanning:
     name: Secret Scanning (Gitleaks)
     runs-on: ubuntu-latest
     steps:
