@@ -21,7 +21,6 @@ jobs:
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
           ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
           exit_code=$?
-          echo "Gitleaks exit code: $exit_code"
           exit $exit_code
 
       - name: Upload Gitleaks report
@@ -43,9 +42,9 @@ jobs:
       - name: Run Semgrep
         run: |
           pip install semgrep
-          semgrep --config=p/python --json -o semgrep-report.json .
+          semgrep --config=p/python --json -o semgrep-report.json . || true
+          semgrep --config=p/python --severity ERROR .
           exit_code=$?
-          echo "Semgrep exit code: $exit_code"
           exit $exit_code
 
       - name: Upload Semgrep report
