@@ -1,0 +1,17 @@
+rules:
+  - id: flask-cors-wildcard-origin
+    pattern: $RESPONSE.headers['Access-Control-Allow-Origin'] = '*'
+    message: >
+      Broken Access Control: the CORS header Access-Control-Allow-Origin is set to
+      wildcard '*', allowing any origin to make cross-origin requests to this API.
+      This enables cross-site request forgery and data theft from authenticated sessions.
+      Restrict the allowed origin to a specific trusted domain.
+      CWE-284 / OWASP A01:2021 - Broken Access Control.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-284"
+      owasp: "A01:2021 - Broken Access Control"
+      ground-truth-id: "V08"
+      confidence: HIGH
+      thesis: "Shift-Left Security in CI/CD Pipelines"

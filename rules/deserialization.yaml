@@ -1,0 +1,22 @@
+rules:
+  - id: flask-insecure-deserialization-pickle
+    patterns:
+      - pattern: pickle.loads(...)
+      - pattern-inside: |
+          @$APP.route(...)
+          def $FUNC(...):
+            ...
+    message: >
+      Insecure deserialization: pickle.loads() is called inside a Flask route handler.
+      If the input originates from user-controlled request data, an attacker can craft
+      a malicious pickle payload to achieve arbitrary Remote Code Execution.
+      Do not deserialize untrusted data with pickle.
+      CWE-502 / OWASP A08:2021 - Software and Data Integrity Failures.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-502"
+      owasp: "A08:2021 - Software and Data Integrity Failures"
+      ground-truth-id: "V04"
+      confidence: HIGH
+      thesis: "Shift-Left Security in CI/CD Pipelines"

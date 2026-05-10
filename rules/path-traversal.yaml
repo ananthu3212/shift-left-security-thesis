@@ -1,0 +1,20 @@
+rules:
+  - id: flask-path-traversal-string-concat
+    patterns:
+      - pattern: |
+          $FILENAME = $X + ".txt"
+          $PATH = Path($BASE + "/" + $FILENAME)
+    message: >
+      Potential directory traversal: a path is constructed by concatenating
+      a user-controlled value without sanitisation. An attacker can supply '../'
+      sequences to escape the intended directory and read or write arbitrary files.
+      Validate and resolve the path against a known safe base directory.
+      CWE-22 / OWASP A01:2021 - Broken Access Control.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-22"
+      owasp: "A01:2021 - Broken Access Control"
+      ground-truth-id: "V05"
+      confidence: MEDIUM
+      thesis: "Shift-Left Security in CI/CD Pipelines"

@@ -1,0 +1,22 @@
+rules:
+  - id: flask-csp-unsafe-inline
+    patterns:
+      - pattern: $RESPONSE.headers['Content-Security-Policy'] = $VALUE
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ".*unsafe-inline.*"
+    message: >
+      Security misconfiguration: the Content-Security-Policy header permits
+      'unsafe-inline' scripts, which disables the XSS protection that CSP
+      is designed to provide. An attacker who achieves HTML injection can
+      execute arbitrary JavaScript in the victim's browser.
+      Remove 'unsafe-inline' and use nonces or hashes for legitimate inline scripts.
+      CWE-16 / OWASP A05:2021 - Security Misconfiguration.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-16"
+      owasp: "A05:2021 - Security Misconfiguration"
+      ground-truth-id: "V09"
+      confidence: HIGH
+      thesis: "Shift-Left Security in CI/CD Pipelines"

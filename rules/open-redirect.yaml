@@ -1,0 +1,23 @@
+rules:
+  - id: flask-open-redirect-request-param
+    patterns:
+      - pattern: return redirect($URL)
+      - pattern-inside: |
+          def $FUNC(...):
+            ...
+            $URL = request.$METHOD.get(...)
+            ...
+    message: >
+      Open redirect: the redirect() target is derived directly from a user-controlled
+      request parameter without validation. An attacker can supply an external URL
+      to redirect victims to a malicious site, enabling phishing attacks.
+      Validate redirect targets against an allowlist of trusted URLs.
+      CWE-601 / OWASP A01:2021 - Broken Access Control.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-601"
+      owasp: "A01:2021 - Broken Access Control"
+      ground-truth-id: "V06"
+      confidence: HIGH
+      thesis: "Shift-Left Security in CI/CD Pipelines"

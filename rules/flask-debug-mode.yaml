@@ -1,0 +1,18 @@
+rules:
+  - id: flask-debug-mode-enabled
+    pattern: $APP.run(..., debug=True, ...)
+    message: >
+      Security misconfiguration: Flask debug mode is enabled. This activates the
+      Werkzeug interactive debugger which allows any user who triggers an exception
+      to execute arbitrary Python code in the server process via the browser.
+      Never run Flask with debug=True in production.
+      Set debug=False or control it via an environment variable.
+      CWE-94 / OWASP A05:2021 - Security Misconfiguration.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-94"
+      owasp: "A05:2021 - Security Misconfiguration"
+      ground-truth-id: "V10"
+      confidence: HIGH
+      thesis: "Shift-Left Security in CI/CD Pipelines"
