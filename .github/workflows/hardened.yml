@@ -23,6 +23,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
+        # Pinned to v8.18.4 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
           ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
@@ -53,6 +54,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run tfsec on Terraform infrastructure
+        # Pinned to v1.28.11 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
           chmod +x tfsec
@@ -207,10 +209,11 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
-      # Trivy pinned to v0.28.0 — version used during thesis evaluation
-      # Ensures reproducibility: same CVE database version, same detection logic
+      # Trivy scanner pinned to v0.57.1 via trivy-version input
+      # Pinning the scanner version (not the action wrapper) ensures
+      # the same CVE detection logic and database schema runs every time
       - name: Run Trivy filesystem scan — JSON
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
@@ -218,9 +221,10 @@ jobs:
           output: trivy-fs-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
+          trivy-version: v0.57.1
 
       - name: Run Trivy filesystem scan — SARIF
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
@@ -228,6 +232,7 @@ jobs:
           output: trivy-fs.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
+          trivy-version: v0.57.1
 
       - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
@@ -237,22 +242,24 @@ jobs:
           category: trivy-filesystem
 
       - name: Run Trivy image scan — JSON
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: flask-webgoat:hardened
           format: json
           output: trivy-image-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
+          trivy-version: v0.57.1
 
       - name: Run Trivy image scan — SARIF
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: flask-webgoat:hardened
           format: sarif
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
+          trivy-version: v0.57.1
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         if: always()
