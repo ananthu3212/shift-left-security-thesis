@@ -147,8 +147,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Semgrep with default and custom rules
+        # Pinned to v1.162.0 — version used during thesis evaluation
+        # Ensures reproducibility of scan results
         run: |
-          pip install semgrep
+          pip install semgrep==1.162.0
 
           semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
 
@@ -205,8 +207,10 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
+      # Trivy pinned to v0.28.0 — version used during thesis evaluation
+      # Ensures reproducibility: same CVE database version, same detection logic
       - name: Run Trivy filesystem scan — JSON
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scan-ref: .
@@ -216,7 +220,7 @@ jobs:
           exit-code: 0
 
       - name: Run Trivy filesystem scan — SARIF
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scan-ref: .
@@ -233,7 +237,7 @@ jobs:
           category: trivy-filesystem
 
       - name: Run Trivy image scan — JSON
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: flask-webgoat:hardened
           format: json
@@ -242,7 +246,7 @@ jobs:
           exit-code: 0
 
       - name: Run Trivy image scan — SARIF
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: flask-webgoat:hardened
           format: sarif
