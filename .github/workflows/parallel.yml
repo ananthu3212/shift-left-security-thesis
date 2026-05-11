@@ -1,0 +1,348 @@
+# ================================================================
+# parallel.yml — Parallel Security Pipeline
+#
+# Comparison variant of the hardened pipeline.
+# All security scan jobs run SIMULTANEOUSLY instead of sequentially.
+# Used to measure runtime overhead of sequential vs parallel execution.
+#
+# Sequential pipeline (hardened.yml):
+#   Gitleaks → Semgrep → Trivy (each waits for previous)
+#   Advantage: early exit on secret detection
+#   Disadvantage: longer total wall-clock time
+#
+# Parallel pipeline (this file):
+#   Gitleaks ─┐
+#   Semgrep  ─┼→ Dashboard
+#   Trivy    ─┘
+#   Advantage: shorter total wall-clock time
+#   Disadvantage: all tools run even if secrets are detected
+#
+# Triggered manually via workflow_dispatch for runtime comparison.
+# Results are documented in the thesis evaluation chapter.
+#
+# Thesis: Shift-Left Security in CI/CD Pipelines
+# Author: Ananthu Chandra Babu
+# University: Westfälische Hochschule Gelsenkirchen, 2026
+# ================================================================
+
+name: Parallel Pipeline (Runtime Comparison)
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual run (e.g. runtime comparison run 1)'
+        required: false
+        default: 'Runtime comparison'
+
+permissions:
+  security-events: write
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  # ================================================================
+  # All three scan jobs have NO dependencies on each other.
+  # They start simultaneously as soon as the workflow triggers.
+  # ================================================================
+
+  secret-scanning:
+    name: Secret Scanning (Gitleaks) [PARALLEL]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Record start time
+        run: echo "START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Run Gitleaks
+        # Pinned to v8.18.4 — same version as sequential pipeline
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
+          ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
+          exit_code=$?
+
+          echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
+          if [ $exit_code -eq 0 ]; then
+            echo "✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
+          else
+            COUNT=$(python3 -c "import json; data=json.load(open('gitleaks-report.json')); print(len(data))" 2>/dev/null || echo "1+")
+            echo "❌ **$COUNT secret(s) detected**" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: pipeline continues despite findings" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          END=$(date +%s)
+          DURATION=$((END - START))
+          echo "⏱️ Gitleaks runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
+
+          exit $exit_code
+
+      - name: Upload Gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+
+  iac-scanning:
+    name: IaC Security Scan (tfsec) [PARALLEL]
+    runs-on: ubuntu-latest
+    # No dependency on other jobs — runs immediately
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Record start time
+        run: echo "START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Run tfsec on Terraform infrastructure
+        # Pinned to v1.28.11 — same version as sequential pipeline
+        run: |
+          curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
+          chmod +x tfsec
+
+          ./tfsec terraform/ \
+            --format json \
+            --out tfsec-report.json \
+            --soft-fail || true
+
+          echo "## 🏗️ IaC Security Scan (tfsec)" >> $GITHUB_STEP_SUMMARY
+
+          CRITICAL=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('tfsec-report.json'))
+              results = data.get('results') or []
+              print(sum(1 for r in results if r.get('severity') == 'CRITICAL'))
+          except:
+              print(0)" 2>/dev/null || echo "0")
+
+          HIGH=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('tfsec-report.json'))
+              results = data.get('results') or []
+              print(sum(1 for r in results if r.get('severity') == 'HIGH'))
+          except:
+              print(0)" 2>/dev/null || echo "0")
+
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+
+          END=$(date +%s)
+          DURATION=$((END - START))
+          echo "⏱️ tfsec runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload tfsec report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfsec-report
+          path: tfsec-report.json
+
+  sast:
+    name: SAST (Semgrep) [PARALLEL]
+    runs-on: ubuntu-latest
+    # No dependency on secret-scanning — runs immediately
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Record start time
+        run: echo "START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Run Semgrep with default and custom rules
+        # Pinned to v1.162.0 — same version as sequential pipeline
+        run: |
+          pip install semgrep==1.162.0
+
+          semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
+
+          semgrep --config=p/python --config=rules/ --json -o semgrep-report.json --error .
+          SEMGREP_EXIT=$?
+
+          echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
+          FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+          if [ $SEMGREP_EXIT -eq 0 ]; then
+            echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **$FINDINGS finding(s) detected**" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: pipeline continues despite findings" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          END=$(date +%s)
+          DURATION=$((END - START))
+          echo "⏱️ Semgrep runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
+
+          exit $SEMGREP_EXIT
+
+      - name: Upload Semgrep SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Upload Semgrep reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-report
+          path: |
+            semgrep-report.json
+            semgrep.sarif
+
+  sca-and-image:
+    name: SCA + Image Scan (Trivy) [PARALLEL]
+    runs-on: ubuntu-latest
+    # No dependency on sast — runs immediately
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Record start time
+        run: echo "START=$(date +%s)" >> $GITHUB_ENV
+
+      - name: Build Docker image
+        run: docker build -t flask-webgoat:hardened .
+
+      - name: Run Trivy filesystem scan — JSON
+        # Pinned to v0.57.1 — same version as sequential pipeline
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: json
+          output: trivy-fs-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          trivy-version: v0.57.1
+
+      - name: Run Trivy filesystem scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          trivy-version: v0.57.1
+
+      - name: Upload Trivy FS SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+      - name: Run Trivy image scan — JSON
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:hardened
+          format: json
+          output: trivy-image-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          trivy-version: v0.57.1
+
+      - name: Run Trivy image scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:hardened
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+          trivy-version: v0.57.1
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Write Trivy summary
+        if: always()
+        run: |
+          echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
+
+          FS_CRITICAL=$(python3 -c "
+          import json
+          data = json.load(open('trivy-fs-report.json'))
+          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL']
+          print(len(vulns))" 2>/dev/null || echo "0")
+
+          FS_HIGH=$(python3 -c "
+          import json
+          data = json.load(open('trivy-fs-report.json'))
+          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
+          print(len(vulns))" 2>/dev/null || echo "0")
+
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
+
+          END=$(date +%s)
+          DURATION=$((END - START))
+          echo "⏱️ Trivy runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL=$((FS_CRITICAL + FS_HIGH))
+          if [ $TOTAL -gt 0 ]; then
+            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected**" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: pipeline continues despite findings" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: |
+            trivy-fs-report.json
+            trivy-image-report.json
+            trivy-fs.sarif
+            trivy-image.sarif
+
+  generate-dashboard:
+    name: Generate Security Dashboard
+    runs-on: ubuntu-latest
+    needs: [secret-scanning, iac-scanning, sast, sca-and-image]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all scan reports
+        uses: actions/download-artifact@v4
+        with:
+          path: reports/
+
+      - name: Generate thesis evaluation dashboard
+        run: python3 scripts/generate_report.py
+
+      - name: Write parallel pipeline summary
+        run: |
+          echo "## ⚡ Parallel Pipeline Runtime Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All scan jobs ran simultaneously. Total wall-clock time = longest job." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Compare with sequential pipeline (hardened.yml) runtime for evaluation chapter." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload generic dashboard as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parallel-dashboard
+          path: dashboard/index.html
