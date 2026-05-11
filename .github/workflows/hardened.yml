@@ -227,14 +227,26 @@ jobs:
         with:
           path: reports/
 
-      - name: Generate HTML dashboard
+      - name: Generate thesis evaluation dashboard
         run: python3 scripts/generate_report.py
+
+      - name: Generate generic findings dashboard
+        run: python3 scripts/generate_generic_report.py
 
       - name: Write dashboard link to summary
         run: |
           echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "Dashboard will be published at:" >> $GITHUB_STEP_SUMMARY
+          echo "Thesis evaluation dashboard published at:" >> $GITHUB_STEP_SUMMARY
           echo "**https://ananthu3212.github.io/shift-left-security-thesis/**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Generic findings dashboard available as artifact: \`generic-security-dashboard\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload generic dashboard as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generic-security-dashboard
+          path: generic-dashboard/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

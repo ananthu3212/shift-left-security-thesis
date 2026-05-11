@@ -80,6 +80,8 @@ on:
 permissions:
   security-events: write
   contents: read
+  pages: write
+  id-token: write
 
 jobs:
   # ================================================================
@@ -375,3 +377,47 @@ jobs:
             trivy-image-report.json
             trivy-fs.sarif
             trivy-image.sarif
+
+  # ================================================================
+  # JOB 4: Generic Security Dashboard
+  # Generates a findings dashboard that works for ANY project.
+  # No ground truth required — shows raw findings from all tools
+  # grouped by severity, OWASP category and tool.
+  # Published to GitHub Pages automatically after every scan.
+  # ================================================================
+  generate-dashboard:
+    name: Generate Security Dashboard
+    runs-on: ubuntu-latest
+    needs: [secret-scanning, sast, sca-and-image]
+    if: always()
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all scan reports
+        uses: actions/download-artifact@v4
+        with:
+          path: reports/
+
+      - name: Generate generic findings dashboard
+        run: python3 scripts/generate_generic_report.py
+
+      - name: Write dashboard link to summary
+        run: |
+          REPO="${{ github.repository }}"
+          OWNER=$(echo $REPO | cut -d'/' -f1)
+          REPONAME=$(echo $REPO | cut -d'/' -f2)
+          echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "Published at: **https://${OWNER}.github.io/${REPONAME}/**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: generic-dashboard/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
