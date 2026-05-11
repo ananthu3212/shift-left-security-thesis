@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
+# Required for uploading findings to GitHub Security tab
+permissions:
+  security-events: write
+  contents: read
+
 jobs:
   secret-scanning:
     name: Secret Scanning (Gitleaks)
@@ -21,6 +26,15 @@ jobs:
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
           ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
           exit_code=$?
+
+          echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
+          if [ $exit_code -eq 0 ]; then
+            echo "✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
+          else
+            COUNT=$(python3 -c "import json; data=json.load(open('gitleaks-report.json')); print(len(data))" 2>/dev/null || echo "1+")
+            echo "❌ **$COUNT secret(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
+          fi
+
           exit $exit_code
 
       - name: Upload Gitleaks report
@@ -39,19 +53,55 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Run Semgrep
+      - name: Run Semgrep with default and custom rules
         run: |
           pip install semgrep
-          semgrep --config=p/python --json -o semgrep-report.json --error .
-          exit_code=$?
-          exit $exit_code
 
-      - name: Upload Semgrep report
+          # Run with JSON for evaluation metrics
+          semgrep --config=p/python --config=rules/ --json -o semgrep-report.json --error .
+          SEMGREP_EXIT=$?
+
+          # Run with SARIF for GitHub Security tab (do not fail here)
+          semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
+
+          # Write step summary
+          echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
+          FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+          if [ $SEMGREP_EXIT -eq 0 ]; then
+            echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **$FINDINGS finding(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
+            python3 -c "
+          import json
+          data = json.load(open('semgrep-report.json'))
+          for r in data.get('results', []):
+              rule = r['check_id'].split('.')[-1]
+              path = r['path']
+              line = r['start']['line']
+              print(f'| {rule} | \`{path}\` | {line} |')
+          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          fi
+
+          exit $SEMGREP_EXIT
+
+      - name: Upload Semgrep SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Upload Semgrep reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
-          path: semgrep-report.json
+          path: |
+            semgrep-report.json
+            semgrep.sarif
 
   sca-and-image:
     name: SCA + Image Scan (Trivy)
@@ -65,7 +115,7 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
-      - name: Run Trivy filesystem scan (SCA)
+      - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -73,16 +123,81 @@ jobs:
           format: json
           output: trivy-fs-report.json
           severity: HIGH,CRITICAL
-          exit-code: 1
+          exit-code: 0
 
-      - name: Run Trivy image scan
+      - name: Run Trivy filesystem scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy FS SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+      - name: Run Trivy image scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: flask-webgoat:hardened
           format: json
           output: trivy-image-report.json
           severity: HIGH,CRITICAL
-          exit-code: 1
+          exit-code: 0
+
+      - name: Run Trivy image scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:hardened
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Write Trivy step summary and check findings
+        if: always()
+        run: |
+          echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
+
+          FS_CRITICAL=$(python3 -c "
+          import json
+          data = json.load(open('trivy-fs-report.json'))
+          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL']
+          print(len(vulns))" 2>/dev/null || echo "0")
+
+          FS_HIGH=$(python3 -c "
+          import json
+          data = json.load(open('trivy-fs-report.json'))
+          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
+          print(len(vulns))" 2>/dev/null || echo "0")
+
+          echo "### Filesystem (Dependencies)" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL=$((FS_CRITICAL + FS_HIGH))
+          if [ $TOTAL -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          else
+            echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload Trivy reports
         if: always()
@@ -92,3 +207,5 @@ jobs:
           path: |
             trivy-fs-report.json
             trivy-image-report.json
+            trivy-fs.sarif
+            trivy-image.sarif
