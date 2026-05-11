@@ -57,14 +57,13 @@ jobs:
         run: |
           pip install semgrep
 
-          # Run with JSON for evaluation metrics
+          # Run SARIF first — always produces the file regardless of findings
+          semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
+
+          # Run JSON with --error — exits with code 1 if findings exist
           semgrep --config=p/python --config=rules/ --json -o semgrep-report.json --error .
           SEMGREP_EXIT=$?
 
-          # Run with SARIF for GitHub Security tab (do not fail here)
-          semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
-
-          # Write step summary
           echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
           FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
           if [ $SEMGREP_EXIT -eq 0 ]; then
@@ -89,7 +88,7 @@ jobs:
 
       - name: Upload Semgrep SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
           category: semgrep
@@ -137,7 +136,7 @@ jobs:
 
       - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-filesystem
@@ -162,7 +161,7 @@ jobs:
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
