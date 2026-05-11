@@ -36,7 +36,7 @@ GROUND_TRUTH = [
     {"id":"V10","vulnerability":"Security Misconfiguration (debug=True)","file":"run.py","line":15,"cwe":"CWE-94","owasp":"A05:2021","tool":"semgrep","keywords":["flask-debug-mode-enabled"],"file_match":"run.py","ruleset":"custom"},
     {"id":"V11","vulnerability":"Hardcoded Secret Key","file":"flask_webgoat/__init__.py","line":13,"cwe":"CWE-798","owasp":"A02:2021","tool":"gitleaks","keywords":["secret","generic-api-key"],"file_match":"__init__.py","ruleset":"default"},
     {"id":"V12","vulnerability":"Outdated Flask 1.1.2","file":"requirements.txt","line":None,"cwe":"CVE-2023-30861","owasp":"A06:2021","tool":"trivy","keywords":["CVE-2023-30861","flask"],"file_match":"requirements.txt","ruleset":"default"},
-    {"id":"V13","vulnerability":"Outdated Jinja2 2.11.3","file":"requirements.txt","line":None,"cwe":"CVE-2024-34064","owasp":"A06:2021","tool":"trivy","keywords":["jinja2"],"file_match":"requirements.txt","ruleset":"default"},
+    {"id":"V13","vulnerability":"Outdated Jinja2 2.11.3 (MEDIUM — below threshold)","file":"requirements.txt","line":None,"cwe":"CVE-2024-22195","owasp":"A06:2021","tool":"trivy","keywords":["jinja2"],"file_match":"requirements.txt","ruleset":"default"},
     {"id":"V14","vulnerability":"Outdated Werkzeug 1.0.1","file":"requirements.txt","line":None,"cwe":"CVE-2023-25577","owasp":"A06:2021","tool":"trivy","keywords":["werkzeug","CVE-2023-25577"],"file_match":"requirements.txt","ruleset":"default"},
 ]
 
@@ -118,7 +118,6 @@ def compute_metrics(gt_results, semgrep_data):
     g_tp, g_fn = tool_metrics("gitleaks")
     t_tp, t_fn = tool_metrics("trivy")
 
-    # False positives: Semgrep findings not matching any ground truth keyword
     gt_keywords = set()
     for gt in GROUND_TRUTH:
         if gt["tool"] == "semgrep":
@@ -146,7 +145,6 @@ def compute_metrics(gt_results, semgrep_data):
     total_fn = s_fn + g_fn + t_fn
     c_p, c_r, c_f1 = calc(total_tp, s_fp, total_fn)
 
-    # Custom rules only contribution
     custom_only_tp = sum(1 for r in gt_results
                          if r["detected"] and r["detected_by_ruleset"] == "custom")
 
@@ -159,7 +157,6 @@ def compute_metrics(gt_results, semgrep_data):
     }
 
 def get_trivy_app_cves(trivy_data):
-    """Extract only application dependency CVEs (not OS packages)."""
     app_pkgs = {"flask", "jinja2", "werkzeug", "click", "itsdangerous", "markupsafe"}
     cves = []
     if not trivy_data:
@@ -185,7 +182,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     overall_status = "BLOCKED" if (metrics["semgrep"]["tp"] > 0 or metrics["gitleaks"]["tp"] > 0 or metrics["trivy"]["tp"] > 0) else "PASSED"
     status_color = "#dc3545" if overall_status == "BLOCKED" else "#198754"
 
-    # OWASP category counts
     owasp_map = {}
     for r in gt_results:
         cat = r["gt"]["owasp"]
@@ -198,11 +194,9 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     owasp_detected = json.dumps([v["detected"] for v in owasp_map.values()])
     owasp_missed = json.dumps([v["total"] - v["detected"] for v in owasp_map.values()])
 
-    # Custom vs default detection
     custom_tp = metrics["custom_only_tp"]
     default_tp = total_detected - custom_tp
 
-    # Ground truth rows
     gt_rows = ""
     for r in gt_results:
         gt = r["gt"]
@@ -217,10 +211,13 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
                 ruleset_badge = '<span class="badge bg-secondary ms-1">default</span>'
         tool_badge = f'<span class="badge bg-info text-dark">{gt["tool"]}</span>'
         line_str = str(gt["line"]) if gt["line"] else "—"
+        missed_note = ""
+        if not detected and "below threshold" in gt["vulnerability"].lower():
+            missed_note = '<br><small class="text-muted">CVEs classified as MEDIUM by NVD — below HIGH/CRITICAL threshold</small>'
         gt_rows += f"""
         <tr>
             <td><strong>{gt["id"]}</strong></td>
-            <td>{gt["vulnerability"]}</td>
+            <td>{gt["vulnerability"]}{missed_note}</td>
             <td><code>{gt["file"]}</code></td>
             <td>{line_str}</td>
             <td><span class="badge bg-dark">{gt["cwe"]}</span></td>
@@ -229,7 +226,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
             <td>{badge_detected}{ruleset_badge}</td>
         </tr>"""
 
-    # Semgrep FP rows
     fp_rows = ""
     for r in metrics["semgrep"]["fp_findings"]:
         rule = r.get("check_id","").split(".")[-1]
@@ -246,7 +242,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     if not fp_rows:
         fp_rows = '<tr><td colspan="5" class="text-center text-muted">No false positives identified</td></tr>'
 
-    # Trivy CVE rows
     trivy_rows = ""
     for c in trivy_app_cves[:20]:
         sev_color = "danger" if c["severity"] == "CRITICAL" else "warning" if c["severity"] == "HIGH" else "secondary"
@@ -297,7 +292,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
 
 <div class="container mt-4">
 
-  <!-- Status Banner -->
   <div class="status-banner">
     <div class="d-flex justify-content-between align-items-center">
       <div>
@@ -307,7 +301,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     </div>
   </div>
 
-  <!-- Metric Cards -->
   <div class="row g-3 mb-4">
     <div class="col-md-3">
       <div class="metric-card">
@@ -339,7 +332,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     </div>
   </div>
 
-  <!-- Precision / Recall Table -->
   <h5 class="section-title">📊 Precision / Recall / F1 per Tool</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered">
@@ -388,7 +380,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     </table>
   </div>
 
-  <!-- Charts -->
   <div class="row g-4 mb-4">
     <div class="col-md-6">
       <div class="chart-container">
@@ -404,7 +395,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     </div>
   </div>
 
-  <!-- Ground Truth Coverage Matrix -->
   <h5 class="section-title">🎯 Ground Truth Coverage Matrix (14 Items)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered table-hover">
@@ -416,7 +406,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     </table>
   </div>
 
-  <!-- Application CVEs -->
   <h5 class="section-title">📦 Trivy — Application Dependency CVEs</h5>
   <p class="text-muted small mb-3">Showing only application-level packages (Flask, Jinja2, Werkzeug etc.) — OS-level CVEs excluded from ground truth evaluation.</p>
   <div class="table-responsive mb-4">
@@ -426,7 +415,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
     </table>
   </div>
 
-  <!-- False Positives -->
   <h5 class="section-title">⚠️ False Positive Analysis</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered">
@@ -443,7 +431,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_da
 </div>
 
 <script>
-// OWASP Chart
 new Chart(document.getElementById('owaspChart'), {{
   type: 'bar',
   data: {{
@@ -463,7 +450,6 @@ new Chart(document.getElementById('owaspChart'), {{
   }}
 }});
 
-// Ruleset contribution chart
 new Chart(document.getElementById('rulesetChart'), {{
   type: 'doughnut',
   data: {{
@@ -497,10 +483,9 @@ new Chart(document.getElementById('rulesetChart'), {{
 
 
 def main():
-    # Locate report files — artifacts are downloaded to reports/ subdirectories
     base = Path("reports")
 
-    semgrep_path = base / "semgrep-report" / "semgrep-report.json"
+    semgrep_path  = base / "semgrep-report" / "semgrep-report.json"
     gitleaks_path = base / "gitleaks-report" / "gitleaks-report.json"
     trivy_fs_path = base / "trivy-reports" / "trivy-fs-report.json"
 
@@ -518,12 +503,12 @@ def main():
         print(f"WARNING: trivy report not found at {trivy_fs_path}", file=sys.stderr)
         trivy_data = {"Results": []}
 
-    commit_sha  = os.environ.get("GITHUB_SHA", "local")
-    run_number  = os.environ.get("GITHUB_RUN_NUMBER", "0")
+    commit_sha = os.environ.get("GITHUB_SHA", "local")
+    run_number = os.environ.get("GITHUB_RUN_NUMBER", "0")
 
-    gt_results      = evaluate_ground_truth(semgrep_data, gitleaks_data, trivy_data)
-    metrics         = compute_metrics(gt_results, semgrep_data)
-    trivy_app_cves  = get_trivy_app_cves(trivy_data)
+    gt_results     = evaluate_ground_truth(semgrep_data, gitleaks_data, trivy_data)
+    metrics        = compute_metrics(gt_results, semgrep_data)
+    trivy_app_cves = get_trivy_app_cves(trivy_data)
 
     html = generate_html(gt_results, metrics, trivy_app_cves,
                          semgrep_data, gitleaks_data, commit_sha, run_number)
@@ -532,6 +517,7 @@ def main():
     out_dir.mkdir(exist_ok=True)
     out_file = out_dir / "index.html"
     out_file.write_text(html, encoding="utf-8")
+
     print(f"Dashboard generated: {out_file}")
     print(f"Ground truth coverage: {metrics['combined']['tp']}/{len(GROUND_TRUTH)}")
     print(f"Combined Precision: {metrics['combined']['precision']:.3f}")
