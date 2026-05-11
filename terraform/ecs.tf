@@ -4,8 +4,6 @@
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
 
-  # Container Insights: enables CloudWatch metrics per task
-  # CPU, memory, network — visible in CloudWatch dashboard
   setting {
     name  = "containerInsights"
     value = "enabled"
@@ -18,14 +16,6 @@ resource "aws_ecs_cluster" "main" {
 
 # ============================================================
 # ECS TASK DEFINITION
-# Defines how the Flask container runs on Fargate.
-#
-# Security hardening decisions documented inline:
-# - assign_public_ip = false (enforced in service below)
-# - read_only_root_filesystem = true
-# - non-root user (10001:10001)
-# - drop ALL Linux capabilities
-# - secret injected via secrets block, not environment
 # ============================================================
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
@@ -33,13 +23,8 @@ resource "aws_ecs_task_definition" "app" {
   network_mode             = "awsvpc"
   cpu                      = var.fargate_cpu
   memory                   = var.fargate_memory
-
-  # Execution role: used by Fargate agent to pull image + secrets
-  execution_role_arn = aws_iam_role.execution_role.arn
-
-  # Task role: used by the Flask app itself at runtime
-  # Currently empty — Flask app needs no AWS permissions
-  task_role_arn = aws_iam_role.task_role.arn
+  execution_role_arn       = aws_iam_role.execution_role.arn
+  task_role_arn            = aws_iam_role.task_role.arn
 
   container_definitions = jsonencode([
     {
@@ -53,11 +38,6 @@ resource "aws_ecs_task_definition" "app" {
         }
       ]
 
-      # Secret injected via Secrets Manager — not plain env var
-      # The value is fetched by the Fargate agent at startup
-      # using the execution role. The app receives it as an
-      # environment variable but it is never stored in plaintext
-      # in the task definition or logs.
       secrets = [
         {
           name      = "SECRET_KEY"
@@ -66,19 +46,12 @@ resource "aws_ecs_task_definition" "app" {
       ]
 
       # Security hardening: read-only root filesystem
-      # Prevents any process inside the container from writing
-      # to the filesystem — limits damage from RCE exploits
       readonlyRootFilesystem = true
 
       # Security hardening: non-root user
-      # The Flask app runs as UID 10001, not root (UID 0)
-      # Even if an attacker achieves RCE, they cannot escalate
-      # to root inside the container
       user = "10001:10001"
 
       # Security hardening: drop ALL Linux capabilities
-      # Fargate drops most capabilities by default; this makes
-      # it explicit and documents the security decision
       linuxParameters = {
         capabilities = {
           drop = ["ALL"]
@@ -86,7 +59,6 @@ resource "aws_ecs_task_definition" "app" {
         initProcessEnabled = true
       }
 
-      # CloudWatch logging
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -107,9 +79,26 @@ resource "aws_ecs_task_definition" "app" {
 
 # ============================================================
 # APPLICATION LOAD BALANCER
-# Lives in public subnets — the only public-facing component
-# Fargate tasks are in private subnets with no public IP
+#
+# tfsec findings — documented design decisions:
+#
+# AVD-AWS-0053: ALB is intentionally public-facing.
+# The Fargate tasks run in private subnets with no public IP.
+# The ALB is the single controlled entry point. Making the ALB
+# internal would make the demo application unreachable.
+#
+# AVD-AWS-0054: HTTP (port 80) used instead of HTTPS.
+# HTTPS requires a domain name and an ACM certificate, both of
+# which are out of scope for this thesis demo environment.
+# Production deployment must use HTTPS. Documented as future work.
+#
+# AVD-AWS-0052: FIXED — drop_invalid_header_fields = true added.
+# Dropping invalid HTTP headers prevents HTTP request smuggling
+# attacks where malformed headers could be used to bypass security
+# controls or poison shared caches.
 # ============================================================
+
+#tfsec:ignore:AVD-AWS-0053
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
   internal           = false
@@ -117,7 +106,10 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = aws_subnet.public[*].id
 
-  # Deletion protection off for thesis — easy teardown
+  # Fix for AVD-AWS-0052: drop malformed HTTP headers
+  # Prevents HTTP request smuggling attacks
+  drop_invalid_header_fields = true
+
   enable_deletion_protection = false
 
   tags = {
@@ -147,6 +139,8 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
+# tfsec:ignore:AVD-AWS-0054 -- HTTP intentional for thesis demo.
+# Production requires HTTPS with ACM certificate. Future work.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
@@ -160,11 +154,6 @@ resource "aws_lb_listener" "http" {
 
 # ============================================================
 # ECS SERVICE
-# Runs and maintains the desired number of Fargate tasks.
-#
-# Key hardening decision: assign_public_ip = false
-# Tasks run in private subnets with no public IP address.
-# The only entry point is through the ALB.
 # ============================================================
 resource "aws_ecs_service" "app" {
   name            = "${var.project_name}-service"
