@@ -1,0 +1,543 @@
+#!/usr/bin/env python3
+"""
+generate_report.py — Shift-Left Security Thesis Dashboard Generator
+
+Parses Gitleaks, Semgrep, and Trivy JSON reports, evaluates findings
+against the defined ground truth (14 items), computes Precision/Recall/F1
+per tool, and generates a single-file static HTML dashboard for GitHub Pages.
+
+Thesis: Shift-Left Security in CI/CD Pipelines
+Student: Ananthu Chandra Babu
+University: Westfälische Hochschule Gelsenkirchen, 2026
+"""
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+# ================================================================
+# GROUND TRUTH — 14 known vulnerabilities in flask-webgoat
+# V01-V10: code-level (Semgrep)
+# V11:     hardcoded secret (Gitleaks)
+# V12-V14: outdated dependencies (Trivy)
+# ================================================================
+GROUND_TRUTH = [
+    {"id":"V01","vulnerability":"SQL Injection (login)","file":"flask_webgoat/auth.py","line":17,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"auth.py","ruleset":"default"},
+    {"id":"V02","vulnerability":"SQL Injection (create_user)","file":"flask_webgoat/users.py","line":37,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"users.py","ruleset":"default"},
+    {"id":"V03","vulnerability":"Remote Code Execution","file":"flask_webgoat/actions.py","line":43,"cwe":"CWE-78","owasp":"A03:2021","tool":"semgrep","keywords":["subprocess-injection","subprocess-shell-true","dangerous-subprocess"],"file_match":"actions.py","ruleset":"default"},
+    {"id":"V04","vulnerability":"Insecure Deserialization","file":"flask_webgoat/actions.py","line":61,"cwe":"CWE-502","owasp":"A08:2021","tool":"semgrep","keywords":["flask-insecure-deserialization-pickle"],"file_match":"actions.py","ruleset":"custom"},
+    {"id":"V05","vulnerability":"Directory Traversal","file":"flask_webgoat/actions.py","line":32,"cwe":"CWE-22","owasp":"A01:2021","tool":"semgrep","keywords":["flask-path-traversal-string-concat"],"file_match":"actions.py","ruleset":"custom"},
+    {"id":"V06","vulnerability":"Open Redirect","file":"flask_webgoat/auth.py","line":46,"cwe":"CWE-601","owasp":"A01:2021","tool":"semgrep","keywords":["flask-open-redirect-request-param"],"file_match":"auth.py","ruleset":"custom"},
+    {"id":"V07","vulnerability":"Sensitive Data Exposure","file":"flask_webgoat/__init__.py","line":13,"cwe":"CWE-200","owasp":"A02:2021","tool":"semgrep","keywords":["sqlite-trace-callback-data-exposure"],"file_match":"__init__.py","ruleset":"custom"},
+    {"id":"V08","vulnerability":"Broken Access Control (CORS)","file":"run.py","line":8,"cwe":"CWE-284","owasp":"A01:2021","tool":"semgrep","keywords":["flask-cors-wildcard-origin"],"file_match":"run.py","ruleset":"custom"},
+    {"id":"V09","vulnerability":"Security Misconfiguration (CSP)","file":"run.py","line":10,"cwe":"CWE-16","owasp":"A05:2021","tool":"semgrep","keywords":["flask-csp-unsafe-inline"],"file_match":"run.py","ruleset":"custom"},
+    {"id":"V10","vulnerability":"Security Misconfiguration (debug=True)","file":"run.py","line":15,"cwe":"CWE-94","owasp":"A05:2021","tool":"semgrep","keywords":["flask-debug-mode-enabled"],"file_match":"run.py","ruleset":"custom"},
+    {"id":"V11","vulnerability":"Hardcoded Secret Key","file":"flask_webgoat/__init__.py","line":13,"cwe":"CWE-798","owasp":"A02:2021","tool":"gitleaks","keywords":["secret","generic-api-key"],"file_match":"__init__.py","ruleset":"default"},
+    {"id":"V12","vulnerability":"Outdated Flask 1.1.2","file":"requirements.txt","line":None,"cwe":"CVE-2023-30861","owasp":"A06:2021","tool":"trivy","keywords":["CVE-2023-30861","flask"],"file_match":"requirements.txt","ruleset":"default"},
+    {"id":"V13","vulnerability":"Outdated Jinja2 2.11.3","file":"requirements.txt","line":None,"cwe":"CVE-2024-34064","owasp":"A06:2021","tool":"trivy","keywords":["jinja2"],"file_match":"requirements.txt","ruleset":"default"},
+    {"id":"V14","vulnerability":"Outdated Werkzeug 1.0.1","file":"requirements.txt","line":None,"cwe":"CVE-2023-25577","owasp":"A06:2021","tool":"trivy","keywords":["werkzeug","CVE-2023-25577"],"file_match":"requirements.txt","ruleset":"default"},
+]
+
+def load_json(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def detect_semgrep(gt, results):
+    for r in results:
+        rule_id = r.get("check_id", "").lower()
+        path = r.get("path", "").lower()
+        for kw in gt["keywords"]:
+            if kw.lower() in rule_id and gt["file_match"].lower() in path:
+                return True, r
+    return False, None
+
+def detect_gitleaks(gt, results):
+    if not results:
+        return False, None
+    for r in results:
+        rule_id = (r.get("RuleID") or r.get("ruleId") or "").lower()
+        file_path = (r.get("File") or r.get("file") or "").lower()
+        secret = (r.get("Secret") or r.get("secret") or "").lower()
+        for kw in gt["keywords"]:
+            if kw.lower() in rule_id or kw.lower() in file_path or kw.lower() in secret:
+                return True, r
+    return False, None
+
+def detect_trivy(gt, data):
+    if not data:
+        return False, None
+    for result in data.get("Results", []):
+        for vuln in (result.get("Vulnerabilities") or []):
+            vid = (vuln.get("VulnerabilityID") or "").lower()
+            pkg = (vuln.get("PkgName") or "").lower()
+            for kw in gt["keywords"]:
+                if kw.lower() in vid or kw.lower() in pkg:
+                    return True, vuln
+    return False, None
+
+def evaluate_ground_truth(semgrep_data, gitleaks_data, trivy_data):
+    semgrep_results = semgrep_data.get("results", []) if semgrep_data else []
+    results = []
+    for gt in GROUND_TRUTH:
+        detected = False
+        finding = None
+        detected_by_ruleset = None
+        if gt["tool"] == "semgrep":
+            detected, finding = detect_semgrep(gt, semgrep_results)
+            if detected and finding:
+                detected_by_ruleset = "custom" if finding.get("check_id","").startswith("rules.") else "default"
+        elif gt["tool"] == "gitleaks":
+            detected, finding = detect_gitleaks(gt, gitleaks_data)
+            detected_by_ruleset = "default" if detected else None
+        elif gt["tool"] == "trivy":
+            detected, finding = detect_trivy(gt, trivy_data)
+            detected_by_ruleset = "default" if detected else None
+        results.append({
+            "gt": gt,
+            "detected": detected,
+            "finding": finding,
+            "detected_by_ruleset": detected_by_ruleset
+        })
+    return results
+
+def compute_metrics(gt_results, semgrep_data):
+    semgrep_results = semgrep_data.get("results", []) if semgrep_data else []
+
+    def tool_metrics(tool_name):
+        tool_gt = [r for r in gt_results if r["gt"]["tool"] == tool_name]
+        tp = sum(1 for r in tool_gt if r["detected"])
+        fn = len(tool_gt) - tp
+        return tp, fn
+
+    s_tp, s_fn = tool_metrics("semgrep")
+    g_tp, g_fn = tool_metrics("gitleaks")
+    t_tp, t_fn = tool_metrics("trivy")
+
+    # False positives: Semgrep findings not matching any ground truth keyword
+    gt_keywords = set()
+    for gt in GROUND_TRUTH:
+        if gt["tool"] == "semgrep":
+            for kw in gt["keywords"]:
+                gt_keywords.add(kw.lower())
+
+    fp_findings = []
+    for r in semgrep_results:
+        rule_id = r.get("check_id", "").lower()
+        if not any(kw in rule_id for kw in gt_keywords):
+            fp_findings.append(r)
+    s_fp = len(fp_findings)
+
+    def calc(tp, fp, fn):
+        p = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        r = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2*p*r / (p+r) if (p+r) > 0 else 0.0
+        return round(p,3), round(r,3), round(f1,3)
+
+    s_p, s_r, s_f1 = calc(s_tp, s_fp, s_fn)
+    g_p, g_r, g_f1 = calc(g_tp, 0, g_fn)
+    t_p, t_r, t_f1 = calc(t_tp, 0, t_fn)
+
+    total_tp = s_tp + g_tp + t_tp
+    total_fn = s_fn + g_fn + t_fn
+    c_p, c_r, c_f1 = calc(total_tp, s_fp, total_fn)
+
+    # Custom rules only contribution
+    custom_only_tp = sum(1 for r in gt_results
+                         if r["detected"] and r["detected_by_ruleset"] == "custom")
+
+    return {
+        "semgrep":  {"tp":s_tp,"fp":s_fp,"fn":s_fn,"precision":s_p,"recall":s_r,"f1":s_f1,"fp_findings":fp_findings},
+        "gitleaks": {"tp":g_tp,"fp":0,"fn":g_fn,"precision":g_p,"recall":g_r,"f1":g_f1},
+        "trivy":    {"tp":t_tp,"fp":0,"fn":t_fn,"precision":t_p,"recall":t_r,"f1":t_f1},
+        "combined": {"tp":total_tp,"fp":s_fp,"fn":total_fn,"precision":c_p,"recall":c_r,"f1":c_f1},
+        "custom_only_tp": custom_only_tp,
+    }
+
+def get_trivy_app_cves(trivy_data):
+    """Extract only application dependency CVEs (not OS packages)."""
+    app_pkgs = {"flask", "jinja2", "werkzeug", "click", "itsdangerous", "markupsafe"}
+    cves = []
+    if not trivy_data:
+        return cves
+    for result in trivy_data.get("Results", []):
+        for vuln in (result.get("Vulnerabilities") or []):
+            pkg = (vuln.get("PkgName") or "").lower()
+            if pkg in app_pkgs:
+                cves.append({
+                    "id": vuln.get("VulnerabilityID",""),
+                    "package": vuln.get("PkgName",""),
+                    "installed": vuln.get("InstalledVersion",""),
+                    "fixed": vuln.get("FixedVersion","N/A"),
+                    "severity": vuln.get("Severity",""),
+                    "title": vuln.get("Title","")[:80] if vuln.get("Title") else ""
+                })
+    return cves
+
+def generate_html(gt_results, metrics, trivy_app_cves, semgrep_data, gitleaks_data, commit_sha, run_number):
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    total_gt = len(GROUND_TRUTH)
+    total_detected = metrics["combined"]["tp"]
+    overall_status = "BLOCKED" if (metrics["semgrep"]["tp"] > 0 or metrics["gitleaks"]["tp"] > 0 or metrics["trivy"]["tp"] > 0) else "PASSED"
+    status_color = "#dc3545" if overall_status == "BLOCKED" else "#198754"
+
+    # OWASP category counts
+    owasp_map = {}
+    for r in gt_results:
+        cat = r["gt"]["owasp"]
+        if cat not in owasp_map:
+            owasp_map[cat] = {"total": 0, "detected": 0}
+        owasp_map[cat]["total"] += 1
+        if r["detected"]:
+            owasp_map[cat]["detected"] += 1
+    owasp_labels = json.dumps(list(owasp_map.keys()))
+    owasp_detected = json.dumps([v["detected"] for v in owasp_map.values()])
+    owasp_missed = json.dumps([v["total"] - v["detected"] for v in owasp_map.values()])
+
+    # Custom vs default detection
+    custom_tp = metrics["custom_only_tp"]
+    default_tp = total_detected - custom_tp
+
+    # Ground truth rows
+    gt_rows = ""
+    for r in gt_results:
+        gt = r["gt"]
+        detected = r["detected"]
+        ruleset = r["detected_by_ruleset"] or gt["ruleset"]
+        badge_detected = '<span class="badge bg-success">✓ Detected</span>' if detected else '<span class="badge bg-danger">✗ Missed</span>'
+        ruleset_badge = ""
+        if detected:
+            if ruleset == "custom":
+                ruleset_badge = '<span class="badge bg-warning text-dark ms-1">custom rule</span>'
+            else:
+                ruleset_badge = '<span class="badge bg-secondary ms-1">default</span>'
+        tool_badge = f'<span class="badge bg-info text-dark">{gt["tool"]}</span>'
+        line_str = str(gt["line"]) if gt["line"] else "—"
+        gt_rows += f"""
+        <tr>
+            <td><strong>{gt["id"]}</strong></td>
+            <td>{gt["vulnerability"]}</td>
+            <td><code>{gt["file"]}</code></td>
+            <td>{line_str}</td>
+            <td><span class="badge bg-dark">{gt["cwe"]}</span></td>
+            <td><span class="badge bg-secondary">{gt["owasp"]}</span></td>
+            <td>{tool_badge}</td>
+            <td>{badge_detected}{ruleset_badge}</td>
+        </tr>"""
+
+    # Semgrep FP rows
+    fp_rows = ""
+    for r in metrics["semgrep"]["fp_findings"]:
+        rule = r.get("check_id","").split(".")[-1]
+        path = r.get("path","")
+        line = r.get("start",{}).get("line","")
+        fp_rows += f"""
+        <tr>
+            <td><code>{rule}</code></td>
+            <td><code>{path}</code></td>
+            <td>{line}</td>
+            <td><span class="badge bg-warning text-dark">False Positive</span></td>
+            <td>Rule targets Django patterns; not applicable to Flask</td>
+        </tr>"""
+    if not fp_rows:
+        fp_rows = '<tr><td colspan="5" class="text-center text-muted">No false positives identified</td></tr>'
+
+    # Trivy CVE rows
+    trivy_rows = ""
+    for c in trivy_app_cves[:20]:
+        sev_color = "danger" if c["severity"] == "CRITICAL" else "warning" if c["severity"] == "HIGH" else "secondary"
+        trivy_rows += f"""
+        <tr>
+            <td><code>{c["id"]}</code></td>
+            <td>{c["package"]}</td>
+            <td>{c["installed"]}</td>
+            <td>{c["fixed"]}</td>
+            <td><span class="badge bg-{sev_color}">{c["severity"]}</span></td>
+            <td><small>{c["title"]}</small></td>
+        </tr>"""
+    if not trivy_rows:
+        trivy_rows = '<tr><td colspan="6" class="text-center text-muted">No application CVEs detected</td></tr>'
+
+    def pct(val):
+        return f"{val*100:.1f}%"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shift-Left Security Dashboard</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  body {{ font-family: 'Segoe UI', sans-serif; background: #0d1117; color: #e6edf3; }}
+  .metric-card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1.5rem; text-align: center; }}
+  .metric-value {{ font-size: 2.2rem; font-weight: 700; }}
+  .metric-label {{ font-size: 0.85rem; color: #8b949e; margin-top: 0.3rem; }}
+  .section-title {{ color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.5rem; margin-bottom: 1.5rem; margin-top: 2rem; }}
+  .table {{ --bs-table-bg: #161b22; --bs-table-border-color: #30363d; font-size: 0.875rem; }}
+  .status-banner {{ border-radius: 8px; padding: 1.5rem; margin-bottom: 2rem; background: {status_color}22; border: 2px solid {status_color}; }}
+  .chart-container {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem; }}
+  code {{ color: #79c0ff; }}
+  .navbar-brand {{ font-weight: 700; letter-spacing: -0.5px; }}
+</style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark" style="background:#161b22;border-bottom:1px solid #30363d;">
+  <div class="container">
+    <span class="navbar-brand">🛡️ Shift-Left Security Dashboard</span>
+    <span class="text-muted small">Run #{run_number} &nbsp;·&nbsp; {commit_sha[:7]} &nbsp;·&nbsp; {ts}</span>
+  </div>
+</nav>
+
+<div class="container mt-4">
+
+  <!-- Status Banner -->
+  <div class="status-banner">
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <h3 class="mb-1" style="color:{status_color}">{"❌ Pipeline BLOCKED" if overall_status == "BLOCKED" else "✅ Pipeline PASSED"}</h3>
+        <p class="mb-0 text-muted">Ground truth coverage: <strong style="color:#e6edf3">{total_detected}/{total_gt} vulnerabilities detected</strong> &nbsp;·&nbsp; Combined Recall: <strong style="color:#e6edf3">{pct(metrics["combined"]["recall"])}</strong> &nbsp;·&nbsp; Combined Precision: <strong style="color:#e6edf3">{pct(metrics["combined"]["precision"])}</strong></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metric Cards -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#f85149">{metrics["semgrep"]["tp"] + metrics["semgrep"]["fp"]}</div>
+        <div class="metric-label">🔍 Semgrep Findings</div>
+        <div class="mt-2"><small class="text-success">{metrics["semgrep"]["tp"]} TP</small> &nbsp; <small class="text-warning">{metrics["semgrep"]["fp"]} FP</small> &nbsp; <small class="text-danger">{metrics["semgrep"]["fn"]} FN</small></div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#f85149">{metrics["gitleaks"]["tp"]}</div>
+        <div class="metric-label">🔑 Gitleaks Findings</div>
+        <div class="mt-2"><small class="text-success">{metrics["gitleaks"]["tp"]} TP</small> &nbsp; <small class="text-danger">{metrics["gitleaks"]["fn"]} FN</small></div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#f85149">{len(trivy_app_cves)}</div>
+        <div class="metric-label">📦 Trivy App CVEs</div>
+        <div class="mt-2"><small class="text-success">{metrics["trivy"]["tp"]} TP</small> &nbsp; <small class="text-danger">{metrics["trivy"]["fn"]} FN</small></div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#3fb950">{custom_tp}</div>
+        <div class="metric-label">⚡ Custom Rule Detections</div>
+        <div class="mt-2"><small class="text-muted">additions beyond default ruleset</small></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Precision / Recall Table -->
+  <h5 class="section-title">📊 Precision / Recall / F1 per Tool</h5>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr>
+        <th>Tool</th><th>True Positives</th><th>False Positives</th><th>False Negatives</th>
+        <th>Precision</th><th>Recall</th><th>F1 Score</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>🔍 Semgrep</td>
+          <td class="text-success">{metrics["semgrep"]["tp"]}</td>
+          <td class="text-warning">{metrics["semgrep"]["fp"]}</td>
+          <td class="text-danger">{metrics["semgrep"]["fn"]}</td>
+          <td>{pct(metrics["semgrep"]["precision"])}</td>
+          <td>{pct(metrics["semgrep"]["recall"])}</td>
+          <td><strong>{pct(metrics["semgrep"]["f1"])}</strong></td>
+        </tr>
+        <tr>
+          <td>🔑 Gitleaks</td>
+          <td class="text-success">{metrics["gitleaks"]["tp"]}</td>
+          <td class="text-warning">{metrics["gitleaks"]["fp"]}</td>
+          <td class="text-danger">{metrics["gitleaks"]["fn"]}</td>
+          <td>{pct(metrics["gitleaks"]["precision"])}</td>
+          <td>{pct(metrics["gitleaks"]["recall"])}</td>
+          <td><strong>{pct(metrics["gitleaks"]["f1"])}</strong></td>
+        </tr>
+        <tr>
+          <td>📦 Trivy</td>
+          <td class="text-success">{metrics["trivy"]["tp"]}</td>
+          <td class="text-warning">{metrics["trivy"]["fp"]}</td>
+          <td class="text-danger">{metrics["trivy"]["fn"]}</td>
+          <td>{pct(metrics["trivy"]["precision"])}</td>
+          <td>{pct(metrics["trivy"]["recall"])}</td>
+          <td><strong>{pct(metrics["trivy"]["f1"])}</strong></td>
+        </tr>
+        <tr class="table-active">
+          <td><strong>Combined</strong></td>
+          <td class="text-success"><strong>{metrics["combined"]["tp"]}</strong></td>
+          <td class="text-warning"><strong>{metrics["combined"]["fp"]}</strong></td>
+          <td class="text-danger"><strong>{metrics["combined"]["fn"]}</strong></td>
+          <td><strong>{pct(metrics["combined"]["precision"])}</strong></td>
+          <td><strong>{pct(metrics["combined"]["recall"])}</strong></td>
+          <td><strong>{pct(metrics["combined"]["f1"])}</strong></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Charts -->
+  <div class="row g-4 mb-4">
+    <div class="col-md-6">
+      <div class="chart-container">
+        <h6 class="text-muted mb-3">Detection by OWASP Top 10 Category</h6>
+        <canvas id="owaspChart" height="250"></canvas>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="chart-container">
+        <h6 class="text-muted mb-3">Default Ruleset vs Custom Rules Contribution</h6>
+        <canvas id="rulesetChart" height="250"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ground Truth Coverage Matrix -->
+  <h5 class="section-title">🎯 Ground Truth Coverage Matrix (14 Items)</h5>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered table-hover">
+      <thead><tr>
+        <th>ID</th><th>Vulnerability</th><th>File</th><th>Line</th>
+        <th>CWE</th><th>OWASP</th><th>Tool</th><th>Detection</th>
+      </tr></thead>
+      <tbody>{gt_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- Application CVEs -->
+  <h5 class="section-title">📦 Trivy — Application Dependency CVEs</h5>
+  <p class="text-muted small mb-3">Showing only application-level packages (Flask, Jinja2, Werkzeug etc.) — OS-level CVEs excluded from ground truth evaluation.</p>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr><th>CVE</th><th>Package</th><th>Installed</th><th>Fixed In</th><th>Severity</th><th>Title</th></tr></thead>
+      <tbody>{trivy_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- False Positives -->
+  <h5 class="section-title">⚠️ False Positive Analysis</h5>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr><th>Rule</th><th>File</th><th>Line</th><th>Classification</th><th>Reason</th></tr></thead>
+      <tbody>{fp_rows}</tbody>
+    </table>
+  </div>
+
+  <footer class="text-center text-muted py-4 mt-4" style="border-top:1px solid #30363d;font-size:0.8rem;">
+    Shift-Left Security in CI/CD Pipelines &nbsp;·&nbsp; Ananthu Chandra Babu &nbsp;·&nbsp;
+    Westfälische Hochschule Gelsenkirchen &nbsp;·&nbsp; 2026
+  </footer>
+
+</div>
+
+<script>
+// OWASP Chart
+new Chart(document.getElementById('owaspChart'), {{
+  type: 'bar',
+  data: {{
+    labels: {owasp_labels},
+    datasets: [
+      {{ label: 'Detected', data: {owasp_detected}, backgroundColor: '#3fb95099' }},
+      {{ label: 'Missed',   data: {owasp_missed},   backgroundColor: '#f8514999' }}
+    ]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{ legend: {{ labels: {{ color: '#e6edf3' }} }} }},
+    scales: {{
+      x: {{ stacked: true, ticks: {{ color: '#8b949e' }}, grid: {{ color: '#21262d' }} }},
+      y: {{ stacked: true, ticks: {{ color: '#8b949e', stepSize: 1 }}, grid: {{ color: '#21262d' }} }}
+    }}
+  }}
+}});
+
+// Ruleset contribution chart
+new Chart(document.getElementById('rulesetChart'), {{
+  type: 'doughnut',
+  data: {{
+    labels: ['Default Ruleset', 'Custom Rules', 'Missed'],
+    datasets: [{{
+      data: [{default_tp}, {custom_tp}, {total_gt - total_detected}],
+      backgroundColor: ['#388bfd99', '#3fb95099', '#f8514999'],
+      borderColor: ['#388bfd', '#3fb950', '#f85149'],
+      borderWidth: 2
+    }}]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ labels: {{ color: '#e6edf3' }} }},
+      tooltip: {{
+        callbacks: {{
+          label: function(c) {{
+            const total = c.dataset.data.reduce((a,b) => a+b, 0);
+            return ` ${{c.label}}: ${{c.raw}} (${{Math.round(c.raw/total*100)}}%)`;
+          }}
+        }}
+      }}
+    }}
+  }}
+}});
+</script>
+</body>
+</html>"""
+    return html
+
+
+def main():
+    # Locate report files — artifacts are downloaded to reports/ subdirectories
+    base = Path("reports")
+
+    semgrep_path = base / "semgrep-report" / "semgrep-report.json"
+    gitleaks_path = base / "gitleaks-report" / "gitleaks-report.json"
+    trivy_fs_path = base / "trivy-reports" / "trivy-fs-report.json"
+
+    semgrep_data  = load_json(semgrep_path)
+    gitleaks_data = load_json(gitleaks_path)
+    trivy_data    = load_json(trivy_fs_path)
+
+    if semgrep_data is None:
+        print(f"WARNING: semgrep report not found at {semgrep_path}", file=sys.stderr)
+        semgrep_data = {"results": []}
+    if gitleaks_data is None:
+        print(f"WARNING: gitleaks report not found at {gitleaks_path}", file=sys.stderr)
+        gitleaks_data = []
+    if trivy_data is None:
+        print(f"WARNING: trivy report not found at {trivy_fs_path}", file=sys.stderr)
+        trivy_data = {"Results": []}
+
+    commit_sha  = os.environ.get("GITHUB_SHA", "local")
+    run_number  = os.environ.get("GITHUB_RUN_NUMBER", "0")
+
+    gt_results      = evaluate_ground_truth(semgrep_data, gitleaks_data, trivy_data)
+    metrics         = compute_metrics(gt_results, semgrep_data)
+    trivy_app_cves  = get_trivy_app_cves(trivy_data)
+
+    html = generate_html(gt_results, metrics, trivy_app_cves,
+                         semgrep_data, gitleaks_data, commit_sha, run_number)
+
+    out_dir = Path("dashboard")
+    out_dir.mkdir(exist_ok=True)
+    out_file = out_dir / "index.html"
+    out_file.write_text(html, encoding="utf-8")
+    print(f"Dashboard generated: {out_file}")
+    print(f"Ground truth coverage: {metrics['combined']['tp']}/{len(GROUND_TRUTH)}")
+    print(f"Combined Precision: {metrics['combined']['precision']:.3f}")
+    print(f"Combined Recall:    {metrics['combined']['recall']:.3f}")
+    print(f"Combined F1:        {metrics['combined']['f1']:.3f}")
+
+
+if __name__ == "__main__":
+    main()

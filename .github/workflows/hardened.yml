@@ -6,10 +6,11 @@ on:
   pull_request:
     branches: [ main ]
 
-# Required for uploading findings to GitHub Security tab
 permissions:
   security-events: write
   contents: read
+  pages: write
+  id-token: write
 
 jobs:
   secret-scanning:
@@ -57,10 +58,10 @@ jobs:
         run: |
           pip install semgrep
 
-          # Run SARIF first — always produces the file regardless of findings
+          # SARIF first — always written regardless of findings
           semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
 
-          # Run JSON with --error — exits with code 1 if findings exist
+          # JSON with --error — exits code 1 if findings exist
           semgrep --config=p/python --config=rules/ --json -o semgrep-report.json --error .
           SEMGREP_EXIT=$?
 
@@ -208,3 +209,38 @@ jobs:
             trivy-image-report.json
             trivy-fs.sarif
             trivy-image.sarif
+
+  generate-dashboard:
+    name: Generate Security Dashboard
+    runs-on: ubuntu-latest
+    needs: [secret-scanning, sast, sca-and-image]
+    if: always()
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all scan reports
+        uses: actions/download-artifact@v4
+        with:
+          path: reports/
+
+      - name: Generate HTML dashboard
+        run: python3 scripts/generate_report.py
+
+      - name: Write dashboard link to summary
+        run: |
+          echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "Dashboard will be published at:" >> $GITHUB_STEP_SUMMARY
+          echo "**https://ananthu3212.github.io/shift-left-security-thesis/**" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dashboard/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
