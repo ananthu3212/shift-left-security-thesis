@@ -1,5 +1,83 @@
-.idea/
+# ============================================================
+# Python
+# ============================================================
 .venv/
+venv/
+env/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+instance/
+.flaskenv
+
+# Testing — likely added during thesis evaluation chapter
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============================================================
+# IDE
+# PyCharm is current. VS Code added as likely future switch.
+# ============================================================
+.idea/
+*.iml
+.vscode/
+
+# ============================================================
+# Terraform
+# ============================================================
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/override.tf
+terraform/override.tf.json
+
+# ============================================================
+# Scan outputs — generated at runtime, never committed
+# Prevents Gitleaks false positives on CVE data in JSON files
+# ============================================================
+gitleaks-report.json
+semgrep-report.json
+semgrep.sarif
+trivy-fs-report.json
+trivy-image-report.json
+trivy-fs.sarif
+trivy-image.sarif
+evaluation/*.json
+evaluation/*.sarif
+
+# ============================================================
+# Generated dashboards — built by pipeline at runtime
+# ============================================================
+dashboard/
+generic-dashboard/
+
+# ============================================================
+# Database
+# flask-webgoat uses SQLite
+# ============================================================
 *.db
+*.sqlite
+*.sqlite3
+
+# ============================================================
+# Secrets and environment variables
+# Safety net — should never be committed
+# ============================================================
+.env
+.env.*
+*.env
+
+# Logs
+*.log
+
+# ============================================================
+# OS files
+# macOS is current. Windows added for future OS switch.
+# ============================================================
+.DS_Store
+Thumbs.db
+desktop.ini
