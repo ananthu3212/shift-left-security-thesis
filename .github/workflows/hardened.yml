@@ -150,6 +150,7 @@ jobs:
 
       - name: Run Semgrep with default and custom rules
         # Pinned to v1.162.0 — version used during thesis evaluation
+        # Semgrep version pinned because rule changes directly affect detection results
         run: |
           pip install semgrep==1.162.0
 
@@ -208,7 +209,10 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
-      # Trivy scanner pinned to v0.57.1 via version input
+      # Trivy uses latest CVE database on each run — intentional design decision.
+      # SCA results are inherently database-dependent and cannot be fully pinned.
+      # Tool version is not pinned because the CVE database version is the key variable.
+      # This is documented as a threat to validity in the thesis evaluation chapter.
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -218,7 +222,6 @@ jobs:
           output: trivy-fs-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Run Trivy filesystem scan — SARIF
         uses: aquasecurity/trivy-action@master
@@ -229,7 +232,6 @@ jobs:
           output: trivy-fs.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
@@ -246,7 +248,6 @@ jobs:
           output: trivy-image-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Run Trivy image scan — SARIF
         uses: aquasecurity/trivy-action@master
@@ -256,7 +257,6 @@ jobs:
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         if: always()

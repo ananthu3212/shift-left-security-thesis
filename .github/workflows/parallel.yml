@@ -204,7 +204,8 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
-      # Trivy scanner pinned to v0.57.1 via version input
+      # Trivy not version-pinned — CVE database updates daily
+      # See thesis evaluation chapter for reproducibility discussion
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -214,7 +215,6 @@ jobs:
           output: trivy-fs-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Run Trivy filesystem scan — SARIF
         uses: aquasecurity/trivy-action@master
@@ -225,7 +225,6 @@ jobs:
           output: trivy-fs.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
@@ -242,7 +241,6 @@ jobs:
           output: trivy-image-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Run Trivy image scan — SARIF
         uses: aquasecurity/trivy-action@master
@@ -252,7 +250,6 @@ jobs:
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
-          version: v0.57.1
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         if: always()
