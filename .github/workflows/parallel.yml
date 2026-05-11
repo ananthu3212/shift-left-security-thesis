@@ -18,7 +18,7 @@
 #   Disadvantage: all tools run even if secrets are detected
 #
 # Triggered manually via workflow_dispatch for runtime comparison.
-# Results are documented in the thesis evaluation chapter.
+# Results documented in thesis evaluation chapter.
 #
 # Thesis: Shift-Left Security in CI/CD Pipelines
 # Author: Ananthu Chandra Babu
@@ -42,11 +42,6 @@ permissions:
   id-token: write
 
 jobs:
-  # ================================================================
-  # All three scan jobs have NO dependencies on each other.
-  # They start simultaneously as soon as the workflow triggers.
-  # ================================================================
-
   secret-scanning:
     name: Secret Scanning (Gitleaks) [PARALLEL]
     runs-on: ubuntu-latest
@@ -91,7 +86,6 @@ jobs:
   iac-scanning:
     name: IaC Security Scan (tfsec) [PARALLEL]
     runs-on: ubuntu-latest
-    # No dependency on other jobs — runs immediately
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -149,7 +143,6 @@ jobs:
   sast:
     name: SAST (Semgrep) [PARALLEL]
     runs-on: ubuntu-latest
-    # No dependency on secret-scanning — runs immediately
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -201,7 +194,6 @@ jobs:
   sca-and-image:
     name: SCA + Image Scan (Trivy) [PARALLEL]
     runs-on: ubuntu-latest
-    # No dependency on sast — runs immediately
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -212,8 +204,8 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
+      # Trivy scanner pinned to v0.57.1 via version input
       - name: Run Trivy filesystem scan — JSON
-        # Pinned to v0.57.1 — same version as sequential pipeline
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -222,7 +214,7 @@ jobs:
           output: trivy-fs-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
-          trivy-version: v0.57.1
+          version: v0.57.1
 
       - name: Run Trivy filesystem scan — SARIF
         uses: aquasecurity/trivy-action@master
@@ -233,7 +225,7 @@ jobs:
           output: trivy-fs.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
-          trivy-version: v0.57.1
+          version: v0.57.1
 
       - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
@@ -250,7 +242,7 @@ jobs:
           output: trivy-image-report.json
           severity: HIGH,CRITICAL
           exit-code: 0
-          trivy-version: v0.57.1
+          version: v0.57.1
 
       - name: Run Trivy image scan — SARIF
         uses: aquasecurity/trivy-action@master
@@ -260,7 +252,7 @@ jobs:
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
           exit-code: 0
-          trivy-version: v0.57.1
+          version: v0.57.1
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         if: always()
@@ -340,7 +332,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Compare with sequential pipeline (hardened.yml) runtime for evaluation chapter." >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload generic dashboard as artifact
+      - name: Upload parallel dashboard as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
