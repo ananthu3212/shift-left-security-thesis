@@ -3,7 +3,7 @@
 generate_report.py — Shift-Left Security Thesis Dashboard Generator
 
 Parses Gitleaks, Semgrep, Trivy and tfsec JSON reports, evaluates findings
-against the defined ground truth (14 application items + 5 IaC items),
+against the defined ground truth (14 application items + 8 IaC items),
 computes Precision/Recall/F1 per tool, and generates a single-file
 static HTML dashboard for GitHub Pages.
 
@@ -42,9 +42,8 @@ GROUND_TRUTH = [
 ]
 
 # ================================================================
-# IaC GROUND TRUTH — 5 tfsec findings in Terraform infrastructure
+# IaC GROUND TRUTH — 8 tfsec findings in Terraform infrastructure
 # Classified as: true_positive, intentional, known_limitation, false_positive
-# This demonstrates research-level IaC analysis beyond raw tool output.
 # ================================================================
 IAC_GROUND_TRUTH = [
     {
@@ -100,7 +99,40 @@ IAC_GROUND_TRUTH = [
         "classification": "false_positive",
         "classification_label": "⚠️ False Positive",
         "classification_color": "danger",
-        "action": "logs:CreateLogStream is the minimum permission required for ECS Fargate tasks to write container logs to CloudWatch. The action is scoped to a specific log group ARN — not a wildcard. This is standard AWS ECS practice.",
+        "action": "logs:CreateLogStream is the minimum permission required for ECS Fargate tasks to write container logs to CloudWatch. Scoped to a specific log group ARN — not a wildcard. Standard AWS ECS practice.",
+    },
+    {
+        "id": "I06",
+        "rule": "AVD-AWS-0178",
+        "resource": "vpc.tf — aws_vpc",
+        "severity": "MEDIUM",
+        "description": "VPC Flow Logs not enabled",
+        "classification": "known_limitation",
+        "classification_label": "🟡 Known Limitation",
+        "classification_color": "warning",
+        "action": "VPC Flow Logs require an S3 bucket or dedicated CloudWatch Log Group with IAM roles, generating ongoing storage costs. Out of scope for thesis demo environment. Production deployments should enable Flow Logs and forward to a SIEM. Documented as future work.",
+    },
+    {
+        "id": "I07",
+        "rule": "AVD-AWS-0017",
+        "resource": "ecr.tf — aws_cloudwatch_log_group",
+        "severity": "LOW",
+        "description": "CloudWatch Log Group not encrypted with customer-managed KMS key",
+        "classification": "true_positive",
+        "classification_label": "✅ True Positive — Remediated",
+        "classification_color": "success",
+        "action": "Fixed: dedicated KMS key created for CloudWatch Logs with correct key policy granting the logs service principal encryption permissions. Key rotation enabled.",
+    },
+    {
+        "id": "I08",
+        "rule": "AVD-AWS-0098",
+        "resource": "secrets.tf — aws_secretsmanager_secret",
+        "severity": "LOW",
+        "description": "Secrets Manager secret uses default AWS managed key",
+        "classification": "true_positive",
+        "classification_label": "✅ True Positive — Remediated",
+        "classification_color": "success",
+        "action": "Fixed: dedicated customer-managed KMS key created for Secrets Manager. Provides full auditability via CloudTrail, ability to revoke access by disabling the key, and automatic annual key rotation.",
     },
 ]
 
@@ -182,7 +214,6 @@ def evaluate_iac(tfsec_data):
     for f in findings:
         rule = f.get("rule_id") or f.get("long_id") or ""
         detected_rules.add(rule)
-
     results = []
     for item in IAC_GROUND_TRUTH:
         detected = item["rule"] in detected_rules
@@ -276,11 +307,11 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     status_color = "#dc3545" if overall_status == "BLOCKED" else "#198754"
 
     # IaC summary counts
+    iac_total = len(iac_results)
     iac_tp = sum(1 for r in iac_results if r["item"]["classification"] == "true_positive")
     iac_intentional = sum(1 for r in iac_results if r["item"]["classification"] == "intentional")
     iac_limitation = sum(1 for r in iac_results if r["item"]["classification"] == "known_limitation")
     iac_fp = sum(1 for r in iac_results if r["item"]["classification"] == "false_positive")
-    iac_total = len(iac_results)
 
     # OWASP breakdown
     owasp_map = {}
@@ -333,13 +364,17 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     for r in iac_results:
         item = r["item"]
         detected = r["detected"]
-        detected_badge = '<span class="badge bg-success">Detected</span>' if detected else '<span class="badge bg-secondary">Not detected in this run</span>'
+        detected_badge = (
+            '<span class="badge bg-success">Detected</span>'
+            if detected
+            else '<span class="badge bg-secondary">Not detected in this run</span>'
+        )
         iac_rows += f"""
         <tr>
             <td><strong>{item["id"]}</strong></td>
             <td><code>{item["rule"]}</code></td>
             <td><small>{item["resource"]}</small></td>
-            <td><span class="badge bg-{'danger' if item['severity'] == 'CRITICAL' else 'warning'}">{item["severity"]}</span></td>
+            <td><span class="badge bg-{'danger' if item['severity'] == 'CRITICAL' else 'warning' if item['severity'] == 'HIGH' else 'info' if item['severity'] == 'MEDIUM' else 'secondary'}">{item["severity"]}</span></td>
             <td>{detected_badge}</td>
             <td><span class="badge bg-{item['classification_color']}">{item['classification_label']}</span></td>
             <td><small class="text-muted">{item["action"]}</small></td>
@@ -414,7 +449,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
 
 <div class="container mt-4">
 
-  <!-- Status Banner -->
   <div class="status-banner">
     <div class="d-flex justify-content-between align-items-center">
       <div>
@@ -428,7 +462,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </div>
   </div>
 
-  <!-- Application Security Metric Cards -->
   <div class="row g-3 mb-4">
     <div class="col-md-3">
       <div class="metric-card">
@@ -470,7 +503,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </div>
   </div>
 
-  <!-- Precision / Recall Table -->
   <h5 class="section-title">📊 Precision / Recall / F1 per Tool</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered">
@@ -519,7 +551,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </table>
   </div>
 
-  <!-- Charts -->
   <div class="row g-4 mb-4">
     <div class="col-md-6">
       <div class="chart-container">
@@ -535,7 +566,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </div>
   </div>
 
-  <!-- Ground Truth Coverage Matrix -->
   <h5 class="section-title">🎯 Ground Truth Coverage Matrix (14 Items)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered table-hover">
@@ -547,16 +577,14 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </table>
   </div>
 
-  <!-- IaC Security Assessment -->
-  <h5 class="section-title">🏗️ IaC Security Assessment (tfsec — 5 Findings)</h5>
+  <h5 class="section-title">🏗️ IaC Security Assessment (tfsec — {iac_total} Findings)</h5>
   <p class="text-muted small mb-3">
-    tfsec identified {iac_total} findings in the Terraform infrastructure code.
+    tfsec identified {iac_total} known findings in the Terraform infrastructure code.
     Each finding is classified as a True Positive (remediated), Intentional Design Decision,
     Known Limitation, or False Positive — demonstrating that IaC scan results require
     human analysis to distinguish genuine misconfigurations from deliberate trade-offs.
   </p>
 
-  <!-- IaC Summary Cards -->
   <div class="row g-3 mb-3">
     <div class="col-md-3">
       <div class="iac-card">
@@ -594,7 +622,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </table>
   </div>
 
-  <!-- Trivy Application CVEs -->
   <h5 class="section-title">📦 Trivy — Application Dependency CVEs</h5>
   <p class="text-muted small mb-3">
     Showing only application-level packages (Flask, Jinja2, Werkzeug etc.)
@@ -610,7 +637,6 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </table>
   </div>
 
-  <!-- False Positive Analysis -->
   <h5 class="section-title">⚠️ SAST False Positive Analysis</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered">
@@ -715,6 +741,10 @@ def main():
     print(f"Dashboard generated: {out_file}")
     print(f"Application ground truth: {metrics['combined']['tp']}/{len(GROUND_TRUTH)}")
     print(f"IaC findings classified: {len(iac_results)}")
+    print(f"  - True Positives (remediated): {sum(1 for r in iac_results if r['item']['classification'] == 'true_positive')}")
+    print(f"  - Intentional decisions:       {sum(1 for r in iac_results if r['item']['classification'] == 'intentional')}")
+    print(f"  - Known limitations:           {sum(1 for r in iac_results if r['item']['classification'] == 'known_limitation')}")
+    print(f"  - False positives:             {sum(1 for r in iac_results if r['item']['classification'] == 'false_positive')}")
     print(f"Combined Precision: {metrics['combined']['precision']:.3f}")
     print(f"Combined Recall:    {metrics['combined']['recall']:.3f}")
     print(f"Combined F1:        {metrics['combined']['f1']:.3f}")
