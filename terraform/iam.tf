@@ -19,12 +19,10 @@ resource "aws_iam_role" "execution_role" {
   })
 }
 
-# AVD-AWS-0057: tfsec flags logs:CreateLogStream as a sensitive action.
-# This is a false positive. logs:CreateLogStream is the minimum
-# permission required for ECS Fargate tasks to write container
-# logs to CloudWatch Logs. Without this permission, all container
-# output is lost. The action is scoped to the specific log group
-# ARN — not granted as a wildcard — satisfying least-privilege.
+# AVD-AWS-0057: tfsec flags logs:CreateLogStream as sensitive.
+# This is a false positive — it is the minimum permission required
+# for ECS Fargate to write container logs to CloudWatch Logs.
+# Scoped to the specific log group ARN, not a wildcard.
 #tfsec:ignore:AVD-AWS-0057
 resource "aws_iam_role_policy" "execution_policy" {
   name = "${var.project_name}-execution-policy"
@@ -36,9 +34,7 @@ resource "aws_iam_role_policy" "execution_policy" {
       {
         Sid    = "ECRAuthorisation"
         Effect = "Allow"
-        Action = [
-          "ecr:GetAuthorizationToken"
-        ]
+        Action = ["ecr:GetAuthorizationToken"]
         Resource = "*"
       },
       {
@@ -61,12 +57,29 @@ resource "aws_iam_role_policy" "execution_policy" {
         Resource = "${aws_cloudwatch_log_group.app.arn}:*"
       },
       {
-        Sid    = "SecretsManager"
+        Sid    = "CloudWatchLogsKMS"
         Effect = "Allow"
         Action = [
-          "secretsmanager:GetSecretValue"
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+          "kms:DescribeKey"
         ]
+        Resource = aws_kms_key.logs.arn
+      },
+      {
+        Sid    = "SecretsManager"
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
         Resource = aws_secretsmanager_secret.app_secret_key.arn
+      },
+      {
+        Sid    = "SecretsManagerKMS"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey"
+        ]
+        Resource = aws_kms_key.secrets.arn
       }
     ]
   })
@@ -148,10 +161,7 @@ resource "aws_iam_role_policy" "github_actions_policy" {
           "ecr:UploadLayerPart",
           "ecr:CompleteLayerUpload"
         ]
-        Resource = [
-          "*",
-          aws_ecr_repository.app.arn
-        ]
+        Resource = ["*", aws_ecr_repository.app.arn]
       },
       {
         Sid    = "ECSAccess"
