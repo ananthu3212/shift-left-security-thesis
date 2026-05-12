@@ -1,34 +1,67 @@
+# ================================================================
+# baseline.yml — Baseline Pipeline (No Security Tools)
+#
+# Represents the pre-shift-left state: a typical CI pipeline
+# that builds and pushes a Docker image with no security scanning.
+#
+# Used as the performance baseline for runtime comparison:
+#   Baseline (no security) vs Sequential vs Parallel
+#
+# The absence of security tools means:
+# - No vulnerability detection
+# - No secret scanning
+# - No IaC analysis
+# - Faster execution — but zero security coverage
+#
+# Thesis: Shift-Left Security in CI/CD Pipelines
+# Author: Ananthu Chandra Babu
+# University: Westfälische Hochschule Gelsenkirchen, 2026
+# ================================================================
+
 name: Baseline Pipeline (no security tools)
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_note:
+        description: 'Note for this run (e.g. baseline statistical run 1 of 10)'
+        required: false
+        default: 'Baseline statistical run'
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build Docker Image
+    name: Docker Build (No Security Scanning)
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.8'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      - name: Record start time
+        run: echo "START=$(date +%s)" >> $GITHUB_ENV
 
       - name: Build Docker image
-        run: |
-          docker build -t flask-webgoat:baseline .
+        run: docker build -t flask-webgoat:baseline .
 
-      - name: Confirm build success
+      - name: Write baseline summary
         run: |
-          docker images flask-webgoat:baseline
+          END=$(date +%s)
+          DURATION=$((END - START))
+
+          echo "## 🏗️ Baseline Pipeline — Docker Build Only" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`flask-webgoat:baseline\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build duration | ${DURATION}s |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security tools | ❌ None |" >> $GITHUB_STEP_SUMMARY
+          echo "| Vulnerabilities detected | ❌ 0 (not scanned) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secrets scanned | ❌ No |" >> $GITHUB_STEP_SUMMARY
+          echo "| IaC analysed | ❌ No |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⏱️ **Total runtime: ${DURATION}s**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> This pipeline represents the pre-shift-left baseline." >> $GITHUB_STEP_SUMMARY
+          echo "> Compare with hardened sequential (mean 303s) and parallel (mean 231s)." >> $GITHUB_STEP_SUMMARY
