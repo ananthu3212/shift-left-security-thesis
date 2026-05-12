@@ -5,6 +5,12 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      run_note:
+        description: 'Note for this run (e.g. statistical run 1 of 10)'
+        required: false
+        default: 'Manual statistical run'
 
 permissions:
   security-events: write
@@ -211,7 +217,6 @@ jobs:
 
       # Trivy uses latest CVE database on each run — intentional design decision.
       # SCA results are inherently database-dependent and cannot be fully pinned.
-      # Tool version is not pinned because the CVE database version is the key variable.
       # This is documented as a threat to validity in the thesis evaluation chapter.
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
