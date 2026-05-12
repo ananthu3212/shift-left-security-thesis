@@ -3,7 +3,7 @@
 generate_generic_report.py — Generic Security Findings Dashboard
 
 Works for ANY project. No hardcoded ground truth required.
-Reads Gitleaks, Semgrep, and Trivy JSON reports and generates
+Reads Gitleaks, Semgrep, Trivy and tfsec JSON reports and generates
 a findings dashboard showing severity breakdown, tool results,
 and OWASP Top 10 coverage.
 
@@ -23,8 +23,6 @@ from pathlib import Path
 
 # ================================================================
 # CWE → OWASP Top 10 2021 mapping
-# Used to categorise Semgrep findings by OWASP category
-# without requiring a hardcoded ground truth
 # ================================================================
 CWE_TO_OWASP = {
     "CWE-89":  "A03:2021 - Injection",
@@ -56,7 +54,6 @@ def load_json(path):
 
 
 def parse_semgrep(data):
-    """Extract and classify Semgrep findings."""
     if not data:
         return []
     findings = []
@@ -92,7 +89,6 @@ def parse_semgrep(data):
 
 
 def parse_gitleaks(data):
-    """Extract Gitleaks findings with secrets redacted."""
     if not data:
         return []
     findings = []
@@ -108,12 +104,10 @@ def parse_gitleaks(data):
 
 
 def parse_trivy(data):
-    """Extract all Trivy CVEs sorted by severity."""
     if not data:
         return []
     cves = []
     for result in data.get("Results", []):
-        target = result.get("Target", "")
         for vuln in (result.get("Vulnerabilities") or []):
             cves.append({
                 "id": vuln.get("VulnerabilityID", ""),
@@ -122,10 +116,27 @@ def parse_trivy(data):
                 "fixed": vuln.get("FixedVersion", "—"),
                 "severity": vuln.get("Severity", "UNKNOWN"),
                 "title": (vuln.get("Title") or "")[:80],
-                "target": target,
             })
     cves.sort(key=lambda x: SEVERITY_ORDER.get(x["severity"], 4))
     return cves
+
+
+def parse_tfsec(data):
+    if not data:
+        return []
+    findings = []
+    for r in (data.get("results") or []):
+        findings.append({
+            "rule": r.get("rule_id") or r.get("long_id") or "",
+            "severity": r.get("severity", "UNKNOWN").upper(),
+            "description": (r.get("description") or "")[:100],
+            "resource": r.get("location", {}).get("filename", "").replace(
+                "/home/runner/work/shift-left-security-thesis/shift-left-security-thesis/", ""
+            ),
+            "resolution": (r.get("resolution") or "")[:100],
+        })
+    findings.sort(key=lambda x: SEVERITY_ORDER.get(x["severity"], 4))
+    return findings
 
 
 def severity_counts(items, key="severity"):
@@ -137,14 +148,17 @@ def severity_counts(items, key="severity"):
     return counts
 
 
-def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
+def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_findings,
                   commit_sha, run_number, repo_name):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    total_findings = len(semgrep_findings) + len(gitleaks_findings) + len(trivy_cves)
+    total_findings = (len(semgrep_findings) + len(gitleaks_findings) +
+                      len(trivy_cves) + len(tfsec_findings))
     blocked = total_findings > 0
     status_color = "#dc3545" if blocked else "#198754"
 
     trivy_counts = severity_counts(trivy_cves)
+    tfsec_counts = severity_counts(tfsec_findings)
+
     semgrep_counts = {"ERROR": 0, "WARNING": 0}
     for f in semgrep_findings:
         sev = f["severity"]
@@ -158,11 +172,10 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     for f in semgrep_findings:
         cat = f["owasp"] or "Uncategorised"
         owasp_map[cat] = owasp_map.get(cat, 0) + 1
-
     owasp_labels = json.dumps(list(owasp_map.keys()))
     owasp_values = json.dumps(list(owasp_map.values()))
 
-    # Severity chart data
+    # Severity chart data (Trivy)
     sev_labels = json.dumps(["CRITICAL", "HIGH", "MEDIUM", "LOW"])
     sev_values = json.dumps([
         trivy_counts["CRITICAL"],
@@ -171,7 +184,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
         trivy_counts["LOW"],
     ])
 
-    # Custom vs default breakdown
+    # Custom vs default
     custom_count = sum(1 for f in semgrep_findings if f["ruleset"] == "custom")
     default_count = sum(1 for f in semgrep_findings if f["ruleset"] == "default")
 
@@ -190,7 +203,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
             <td><code>{f["file"]}</code></td>
             <td>{f["line"]}</td>
             <td><span class="badge bg-{sev_color}">{f["severity"]}</span></td>
-            <td><span class="badge bg-secondary">{f["owasp"][:30] if f["owasp"] else "—"}</span></td>
+            <td><span class="badge bg-secondary">{f["owasp"][:35] if f["owasp"] else "—"}</span></td>
             <td><small class="text-muted">{f["message"]}</small></td>
         </tr>"""
     if not semgrep_rows:
@@ -210,7 +223,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     if not gitleaks_rows:
         gitleaks_rows = '<tr><td colspan="5" class="text-center text-muted">No secrets detected</td></tr>'
 
-    # Trivy rows — top 50 by severity
+    # Trivy rows
     trivy_rows = ""
     for c in trivy_cves[:50]:
         sev_color = {
@@ -230,9 +243,29 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
         </tr>"""
     if not trivy_rows:
         trivy_rows = '<tr><td colspan="6" class="text-center text-muted">No CVEs detected</td></tr>'
-
     remaining = len(trivy_cves) - 50
-    trivy_note = f'<p class="text-muted small mt-2">Showing top 50 of {len(trivy_cves)} total CVEs ordered by severity.</p>' if remaining > 0 else ""
+    trivy_note = (f'<p class="text-muted small mt-2">Showing top 50 of {len(trivy_cves)} '
+                  f'total CVEs ordered by severity.</p>') if remaining > 0 else ""
+
+    # tfsec rows
+    tfsec_rows = ""
+    for f in tfsec_findings:
+        sev_color = {
+            "CRITICAL": "danger",
+            "HIGH": "warning",
+            "MEDIUM": "info",
+            "LOW": "secondary"
+        }.get(f["severity"], "secondary")
+        tfsec_rows += f"""
+        <tr>
+            <td><code>{f["rule"]}</code></td>
+            <td><code>{f["resource"]}</code></td>
+            <td><span class="badge bg-{sev_color}">{f["severity"]}</span></td>
+            <td><small>{f["description"]}</small></td>
+            <td><small class="text-muted">{f["resolution"]}</small></td>
+        </tr>"""
+    if not tfsec_rows:
+        tfsec_rows = '<tr><td colspan="5" class="text-center text-muted">No IaC findings detected</td></tr>'
 
     html = f"""<!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
@@ -260,7 +293,9 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
 <nav class="navbar navbar-dark" style="background:#161b22;border-bottom:1px solid #30363d;">
   <div class="container">
     <span class="navbar-brand">🛡️ Security Scan Report</span>
-    <span class="text-muted small">{repo_name} &nbsp;·&nbsp; Run #{run_number} &nbsp;·&nbsp; {commit_sha[:7]} &nbsp;·&nbsp; {ts}</span>
+    <span class="text-muted small">
+      {repo_name} &nbsp;·&nbsp; Run #{run_number} &nbsp;·&nbsp; {commit_sha[:7]} &nbsp;·&nbsp; {ts}
+    </span>
   </div>
 </nav>
 
@@ -274,7 +309,8 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
       <strong style="color:#e6edf3">{len(semgrep_findings)}</strong> SAST findings &nbsp;·&nbsp;
       <strong style="color:#e6edf3">{len(gitleaks_findings)}</strong> secret(s) &nbsp;·&nbsp;
       <strong style="color:#e6edf3">{len(trivy_cves)}</strong> CVEs &nbsp;·&nbsp;
-      <strong style="color:#e6edf3">{custom_count}</strong> detected by custom rules
+      <strong style="color:#e6edf3">{len(tfsec_findings)}</strong> IaC finding(s) &nbsp;·&nbsp;
+      <strong style="color:#3fb950">{custom_count}</strong> detected by custom rules
     </p>
   </div>
 
@@ -309,9 +345,12 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </div>
     <div class="col-md-3">
       <div class="metric-card">
-        <div class="metric-value" style="color:#3fb950">{custom_count}</div>
-        <div class="metric-label">⚡ Custom Rule Detections</div>
-        <div class="mt-2"><small class="text-muted">{default_count} from default ruleset</small></div>
+        <div class="metric-value" style="color:#f85149">{len(tfsec_findings)}</div>
+        <div class="metric-label">🏗️ IaC Findings</div>
+        <div class="mt-2">
+          <small class="text-danger">{tfsec_counts["CRITICAL"]} critical</small> &nbsp;
+          <small class="text-warning">{tfsec_counts["HIGH"]} high</small>
+        </div>
       </div>
     </div>
   </div>
@@ -338,7 +377,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </div>
   </div>
 
-  <!-- Semgrep findings -->
+  <!-- Semgrep -->
   <h5 class="section-title">🔍 SAST Findings (Semgrep)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered table-hover">
@@ -350,7 +389,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </table>
   </div>
 
-  <!-- Gitleaks findings -->
+  <!-- Gitleaks -->
   <h5 class="section-title">🔑 Secret Scanning (Gitleaks)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered">
@@ -361,7 +400,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </table>
   </div>
 
-  <!-- Trivy CVEs -->
+  <!-- Trivy -->
   <h5 class="section-title">📦 CVEs (Trivy)</h5>
   <div class="table-responsive mb-2">
     <table class="table table-bordered">
@@ -373,6 +412,23 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </table>
   </div>
   {trivy_note}
+
+  <!-- tfsec -->
+  <h5 class="section-title">🏗️ IaC Security Findings (tfsec)</h5>
+  <p class="text-muted small mb-3">
+    Infrastructure-as-code security findings from Terraform source analysis.
+    Findings should be reviewed to distinguish genuine misconfigurations from
+    intentional design decisions and false positives.
+  </p>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr>
+        <th>Rule</th><th>Resource</th><th>Severity</th>
+        <th>Description</th><th>Resolution</th>
+      </tr></thead>
+      <tbody>{tfsec_rows}</tbody>
+    </table>
+  </div>
 
   <footer class="text-center text-muted py-4 mt-4"
           style="border-top:1px solid #30363d;font-size:0.8rem;">
@@ -452,10 +508,12 @@ def main():
     semgrep_path  = base / "semgrep-report" / "semgrep-report.json"
     gitleaks_path = base / "gitleaks-report" / "gitleaks-report.json"
     trivy_fs_path = base / "trivy-reports" / "trivy-fs-report.json"
+    tfsec_path    = base / "tfsec-report" / "tfsec-report.json"
 
     semgrep_data  = load_json(semgrep_path)  or {"results": []}
     gitleaks_data = load_json(gitleaks_path) or []
     trivy_data    = load_json(trivy_fs_path) or {"Results": []}
+    tfsec_data    = load_json(tfsec_path)    or {"results": []}
 
     commit_sha = os.environ.get("GITHUB_SHA", "local")
     run_number = os.environ.get("GITHUB_RUN_NUMBER", "0")
@@ -464,9 +522,10 @@ def main():
     semgrep_findings  = parse_semgrep(semgrep_data)
     gitleaks_findings = parse_gitleaks(gitleaks_data)
     trivy_cves        = parse_trivy(trivy_data)
+    tfsec_findings    = parse_tfsec(tfsec_data)
 
     html = generate_html(
-        semgrep_findings, gitleaks_findings, trivy_cves,
+        semgrep_findings, gitleaks_findings, trivy_cves, tfsec_findings,
         commit_sha, run_number, repo_name
     )
 
@@ -479,6 +538,7 @@ def main():
     print(f"Semgrep findings:  {len(semgrep_findings)}")
     print(f"Gitleaks findings: {len(gitleaks_findings)}")
     print(f"Trivy CVEs:        {len(trivy_cves)}")
+    print(f"tfsec findings:    {len(tfsec_findings)}")
 
 
 if __name__ == "__main__":
