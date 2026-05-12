@@ -1,0 +1,32 @@
+{
+  "description": "Pipeline runtime measurements for thesis evaluation. All times in seconds. n=10 per pipeline.",
+  "pipelines": {
+    "baseline": {
+      "label": "Baseline (no security)",
+      "color": "#8b949e",
+      "runs": [29, 38, 37, 38, 30, 32, 55, 30, 32, 34],
+      "mean": 35.5,
+      "std_dev": 7.6,
+      "min": 29,
+      "max": 55
+    },
+    "parallel": {
+      "label": "Parallel (4 tools)",
+      "color": "#388bfd",
+      "runs": [151, 167, 224, 177, 267, 212, 283, 234, 290, 305],
+      "mean": 231.0,
+      "std_dev": 54.6,
+      "min": 151,
+      "max": 305
+    },
+    "sequential": {
+      "label": "Sequential (4 tools)",
+      "color": "#f85149",
+      "runs": [241, 276, 286, 282, 278, 294, 325, 340, 346, 362],
+      "mean": 303.0,
+      "std_dev": 38.3,
+      "min": 241,
+      "max": 362
+    }
+  }
+}

@@ -270,6 +270,25 @@ jobs:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
+      - name: Generate CycloneDX SBOM
+        # Software Bill of Materials — lists all components, versions and licences.
+        # Required under EU Cyber Resilience Act and NIS2 §30 supply chain provisions.
+        # CycloneDX format chosen for broad tooling support and OWASP standardisation.
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: 0
+
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+
       - name: Write Trivy step summary and check findings
         if: always()
         run: |
@@ -292,6 +311,8 @@ jobs:
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **SBOM generated:** CycloneDX format — available as artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=$((FS_CRITICAL + FS_HIGH))
           if [ $TOTAL -gt 0 ]; then
@@ -312,6 +333,7 @@ jobs:
             trivy-image-report.json
             trivy-fs.sarif
             trivy-image.sarif
+            sbom.cdx.json
 
   generate-dashboard:
     name: Generate Security Dashboard

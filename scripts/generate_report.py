@@ -20,9 +20,6 @@ from pathlib import Path
 
 # ================================================================
 # APPLICATION GROUND TRUTH — 14 known vulnerabilities in flask-webgoat
-# V01–V10: code-level (Semgrep)
-# V11:     hardcoded secret (Gitleaks)
-# V12–V14: outdated dependencies (Trivy)
 # ================================================================
 GROUND_TRUTH = [
     {"id":"V01","vulnerability":"SQL Injection (login)","file":"flask_webgoat/auth.py","line":17,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"auth.py","ruleset":"default"},
@@ -43,7 +40,6 @@ GROUND_TRUTH = [
 
 # ================================================================
 # IaC GROUND TRUTH — 8 tfsec findings in Terraform infrastructure
-# Classified as: true_positive, intentional, known_limitation, false_positive
 # ================================================================
 IAC_GROUND_TRUTH = [
     {
@@ -110,7 +106,7 @@ IAC_GROUND_TRUTH = [
         "classification": "known_limitation",
         "classification_label": "🟡 Known Limitation",
         "classification_color": "warning",
-        "action": "VPC Flow Logs require an S3 bucket or dedicated CloudWatch Log Group with IAM roles, generating ongoing storage costs. Out of scope for thesis demo environment. Production deployments should enable Flow Logs and forward to a SIEM. Documented as future work.",
+        "action": "VPC Flow Logs require an S3 bucket or dedicated CloudWatch Log Group with IAM roles, generating ongoing storage costs. Out of scope for thesis demo environment. Documented as future work.",
     },
     {
         "id": "I07",
@@ -208,7 +204,6 @@ def evaluate_ground_truth(semgrep_data, gitleaks_data, trivy_data):
 
 
 def evaluate_iac(tfsec_data):
-    """Match tfsec findings against IaC ground truth."""
     findings = (tfsec_data.get("results") or []) if tfsec_data else []
     detected_rules = set()
     for f in findings:
@@ -217,10 +212,7 @@ def evaluate_iac(tfsec_data):
     results = []
     for item in IAC_GROUND_TRUTH:
         detected = item["rule"] in detected_rules
-        results.append({
-            "item": item,
-            "detected": detected,
-        })
+        results.append({"item": item, "detected": detected})
     return results
 
 
@@ -296,8 +288,22 @@ def get_trivy_app_cves(trivy_data):
     return cves
 
 
+def load_runtime_data():
+    """Load n=10 runtime statistics from data/runtime.json."""
+    paths = [
+        Path("data/runtime.json"),
+        Path("../data/runtime.json"),
+    ]
+    for p in paths:
+        data = load_json(p)
+        if data:
+            return data
+    return None
+
+
 def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
-                  semgrep_data, gitleaks_data, commit_sha, run_number):
+                  semgrep_data, gitleaks_data, commit_sha, run_number,
+                  runtime_data):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     total_gt = len(GROUND_TRUTH)
     total_detected = metrics["combined"]["tp"]
@@ -306,14 +312,12 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
                                     metrics["trivy"]["tp"] > 0) else "PASSED"
     status_color = "#dc3545" if overall_status == "BLOCKED" else "#198754"
 
-    # IaC summary counts
     iac_total = len(iac_results)
     iac_tp = sum(1 for r in iac_results if r["item"]["classification"] == "true_positive")
     iac_intentional = sum(1 for r in iac_results if r["item"]["classification"] == "intentional")
     iac_limitation = sum(1 for r in iac_results if r["item"]["classification"] == "known_limitation")
     iac_fp = sum(1 for r in iac_results if r["item"]["classification"] == "false_positive")
 
-    # OWASP breakdown
     owasp_map = {}
     for r in gt_results:
         cat = r["gt"]["owasp"]
@@ -328,6 +332,192 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
 
     custom_tp = metrics["custom_only_tp"]
     default_tp = total_detected - custom_tp
+
+    # Runtime chart data
+    runtime_chart_js = ""
+    runtime_stats_html = ""
+    if runtime_data:
+        pipelines = runtime_data.get("pipelines", {})
+        baseline = pipelines.get("baseline", {})
+        parallel = pipelines.get("parallel", {})
+        sequential = pipelines.get("sequential", {})
+
+        run_labels = json.dumps([f"Run {i+1}" for i in range(10)])
+        baseline_runs = json.dumps(baseline.get("runs", []))
+        parallel_runs = json.dumps(parallel.get("runs", []))
+        sequential_runs = json.dumps(sequential.get("runs", []))
+
+        runtime_chart_js = f"""
+new Chart(document.getElementById('runtimeChart'), {{
+  type: 'line',
+  data: {{
+    labels: {run_labels},
+    datasets: [
+      {{
+        label: 'Baseline (no security)',
+        data: {baseline_runs},
+        borderColor: '#8b949e',
+        backgroundColor: '#8b949e33',
+        tension: 0.3,
+        fill: false,
+        pointRadius: 4,
+      }},
+      {{
+        label: 'Parallel (4 tools)',
+        data: {parallel_runs},
+        borderColor: '#388bfd',
+        backgroundColor: '#388bfd33',
+        tension: 0.3,
+        fill: false,
+        pointRadius: 4,
+      }},
+      {{
+        label: 'Sequential (4 tools)',
+        data: {sequential_runs},
+        borderColor: '#f85149',
+        backgroundColor: '#f8514933',
+        tension: 0.3,
+        fill: false,
+        pointRadius: 4,
+      }}
+    ]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ labels: {{ color: '#e6edf3' }} }},
+      tooltip: {{
+        callbacks: {{
+          label: function(c) {{
+            return ` ${{c.dataset.label}}: ${{c.raw}}s`;
+          }}
+        }}
+      }}
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#21262d' }} }},
+      y: {{
+        ticks: {{ color: '#8b949e', callback: v => v + 's' }},
+        grid: {{ color: '#21262d' }},
+        title: {{ display: true, text: 'Duration (seconds)', color: '#8b949e' }}
+      }}
+    }}
+  }}
+}});
+
+new Chart(document.getElementById('runtimeBarChart'), {{
+  type: 'bar',
+  data: {{
+    labels: ['Baseline\\n(no security)', 'Parallel\\n(4 tools)', 'Sequential\\n(4 tools)'],
+    datasets: [
+      {{
+        label: 'Mean',
+        data: [{baseline.get('mean',0)}, {parallel.get('mean',0)}, {sequential.get('mean',0)}],
+        backgroundColor: ['#8b949e99', '#388bfd99', '#f8514999'],
+        borderColor: ['#8b949e', '#388bfd', '#f85149'],
+        borderWidth: 2,
+      }}
+    ]
+  }},
+  options: {{
+    responsive: true,
+    plugins: {{
+      legend: {{ display: false }},
+      tooltip: {{
+        callbacks: {{
+          label: function(c) {{
+            const stddevs = [{baseline.get('std_dev',0)}, {parallel.get('std_dev',0)}, {sequential.get('std_dev',0)}];
+            return ` Mean: ${{c.raw}}s ± ${{stddevs[c.dataIndex]}}s`;
+          }}
+        }}
+      }}
+    }},
+    scales: {{
+      x: {{ ticks: {{ color: '#8b949e' }}, grid: {{ color: '#21262d' }} }},
+      y: {{
+        ticks: {{ color: '#8b949e', callback: v => v + 's' }},
+        grid: {{ color: '#21262d' }},
+        title: {{ display: true, text: 'Duration (seconds)', color: '#8b949e' }}
+      }}
+    }}
+  }}
+}});
+"""
+        runtime_stats_html = f"""
+  <h5 class="section-title">⏱️ Pipeline Runtime Comparison (n=10 per pipeline)</h5>
+  <p class="text-muted small mb-3">
+    Each pipeline variant was executed 10 times on GitHub-hosted ubuntu-latest runners.
+    The baseline performs Docker build only. The parallel and sequential variants
+    both run Gitleaks, Semgrep, Trivy and tfsec with identical tool versions and configurations.
+  </p>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#8b949e">{baseline.get('mean',0)}s</div>
+        <div class="metric-label">🏗️ Baseline Mean<br><small>±{baseline.get('std_dev',0)}s &nbsp;|&nbsp; {baseline.get('min',0)}s–{baseline.get('max',0)}s</small></div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#388bfd">{parallel.get('mean',0)}s</div>
+        <div class="metric-label">⚡ Parallel Mean<br><small>±{parallel.get('std_dev',0)}s &nbsp;|&nbsp; {parallel.get('min',0)}s–{parallel.get('max',0)}s</small></div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#f85149">{sequential.get('mean',0)}s</div>
+        <div class="metric-label">🔒 Sequential Mean<br><small>±{sequential.get('std_dev',0)}s &nbsp;|&nbsp; {sequential.get('min',0)}s–{sequential.get('max',0)}s</small></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4 mb-4">
+    <div class="col-md-7">
+      <div class="chart-container">
+        <h6 class="text-muted mb-3">Runtime per Run — All 3 Pipelines</h6>
+        <canvas id="runtimeChart" height="220"></canvas>
+      </div>
+    </div>
+    <div class="col-md-5">
+      <div class="chart-container">
+        <h6 class="text-muted mb-3">Mean Runtime Comparison</h6>
+        <canvas id="runtimeBarChart" height="220"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr>
+        <th>Pipeline</th><th>n</th><th>Mean</th><th>Std Dev</th><th>Min</th><th>Max</th><th>CV</th><th>Security Tools</th><th>Overhead vs Baseline</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td>🏗️ Baseline</td>
+          <td>10</td><td>{baseline.get('mean',0)}s</td><td>±{baseline.get('std_dev',0)}s</td>
+          <td>{baseline.get('min',0)}s</td><td>{baseline.get('max',0)}s</td><td>21.4%</td>
+          <td><span class="badge bg-secondary">None</span></td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>⚡ Parallel</td>
+          <td>10</td><td>{parallel.get('mean',0)}s</td><td>±{parallel.get('std_dev',0)}s</td>
+          <td>{parallel.get('min',0)}s</td><td>{parallel.get('max',0)}s</td><td>23.6%</td>
+          <td><span class="badge bg-success">4 tools</span></td>
+          <td>+{round(parallel.get('mean',0) - baseline.get('mean',0), 1)}s (+{round((parallel.get('mean',0) - baseline.get('mean',0)) / baseline.get('mean',1) * 100, 0):.0f}%)</td>
+        </tr>
+        <tr class="table-active">
+          <td>🔒 Sequential</td>
+          <td>10</td><td>{sequential.get('mean',0)}s</td><td>±{sequential.get('std_dev',0)}s</td>
+          <td>{sequential.get('min',0)}s</td><td>{sequential.get('max',0)}s</td><td>12.6%</td>
+          <td><span class="badge bg-success">4 tools</span></td>
+          <td>+{round(sequential.get('mean',0) - baseline.get('mean',0), 1)}s (+{round((sequential.get('mean',0) - baseline.get('mean',0)) / baseline.get('mean',1) * 100, 0):.0f}%)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+"""
 
     # Ground truth rows
     gt_rows = ""
@@ -566,6 +756,8 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
     </div>
   </div>
 
+  {runtime_stats_html}
+
   <h5 class="section-title">🎯 Ground Truth Coverage Matrix (14 Items)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered table-hover">
@@ -701,6 +893,8 @@ new Chart(document.getElementById('rulesetChart'), {{
     }}
   }}
 }});
+
+{runtime_chart_js}
 </script>
 </body>
 </html>"""
@@ -727,10 +921,12 @@ def main():
     iac_results    = evaluate_iac(tfsec_data)
     metrics        = compute_metrics(gt_results, semgrep_data)
     trivy_app_cves = get_trivy_app_cves(trivy_data)
+    runtime_data   = load_runtime_data()
 
     html = generate_html(
         gt_results, metrics, trivy_app_cves, iac_results,
-        semgrep_data, gitleaks_data, commit_sha, run_number
+        semgrep_data, gitleaks_data, commit_sha, run_number,
+        runtime_data
     )
 
     out_dir = Path("dashboard")
@@ -741,10 +937,7 @@ def main():
     print(f"Dashboard generated: {out_file}")
     print(f"Application ground truth: {metrics['combined']['tp']}/{len(GROUND_TRUTH)}")
     print(f"IaC findings classified: {len(iac_results)}")
-    print(f"  - True Positives (remediated): {sum(1 for r in iac_results if r['item']['classification'] == 'true_positive')}")
-    print(f"  - Intentional decisions:       {sum(1 for r in iac_results if r['item']['classification'] == 'intentional')}")
-    print(f"  - Known limitations:           {sum(1 for r in iac_results if r['item']['classification'] == 'known_limitation')}")
-    print(f"  - False positives:             {sum(1 for r in iac_results if r['item']['classification'] == 'false_positive')}")
+    print(f"Runtime data loaded: {'yes' if runtime_data else 'no'}")
     print(f"Combined Precision: {metrics['combined']['precision']:.3f}")
     print(f"Combined Recall:    {metrics['combined']['recall']:.3f}")
     print(f"Combined F1:        {metrics['combined']['f1']:.3f}")
