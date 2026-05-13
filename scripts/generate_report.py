@@ -446,9 +446,13 @@ new Chart(document.getElementById('runtimeBarChart'), {{
         runtime_stats_html = f"""
   <h5 class="section-title">⏱️ Pipeline Runtime Comparison (n=10 per pipeline)</h5>
   <p class="text-muted small mb-3">
-    Each pipeline variant was executed 10 times on GitHub-hosted ubuntu-latest runners.
+    Each pipeline variant was executed n=10 times on GitHub-hosted ubuntu-latest runners
+    under controlled conditions (May 2026, commit 771e14b).
     The baseline performs Docker build only. The parallel and sequential variants
     both run Gitleaks, Semgrep, Trivy and tfsec with identical tool versions and configurations.
+    <br><span class="text-warning small">⚠️ These are fixed experimental measurements from a controlled evaluation —
+    not live performance metrics. Runtime varies across GitHub-hosted runners due to
+    queue latency and shared infrastructure. See thesis Section 5.4 for full discussion.</span>
   </p>
 
   <div class="row g-3 mb-4">

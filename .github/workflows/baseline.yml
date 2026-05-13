@@ -1,26 +1,10 @@
-# ================================================================
-# baseline.yml — Baseline Pipeline (No Security Tools)
-#
-# Represents the pre-shift-left state: a typical CI pipeline
-# that builds and pushes a Docker image with no security scanning.
-#
-# Used as the performance baseline for runtime comparison:
-#   Baseline (no security) vs Sequential vs Parallel
-#
-# The absence of security tools means:
-# - No vulnerability detection
-# - No secret scanning
-# - No IaC analysis
-# - Faster execution — but zero security coverage
-#
-# Thesis: Shift-Left Security in CI/CD Pipelines
-# Author: Ananthu Chandra Babu
-# University: Westfälische Hochschule Gelsenkirchen, 2026
-# ================================================================
-
 name: Baseline Pipeline (no security tools)
 
 on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
     inputs:
       run_note:
@@ -63,5 +47,6 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "⏱️ **Total runtime: ${DURATION}s**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> This pipeline represents the pre-shift-left baseline." >> $GITHUB_STEP_SUMMARY
-          echo "> Compare with hardened sequential (mean 303s) and parallel (mean 231s)." >> $GITHUB_STEP_SUMMARY
+          echo "> ⚠️ This pipeline represents the pre-shift-left baseline." >> $GITHUB_STEP_SUMMARY
+          echo "> Zero vulnerabilities are detected because no tools are running." >> $GITHUB_STEP_SUMMARY
+          echo "> Compare with the hardened pipeline running simultaneously." >> $GITHUB_STEP_SUMMARY
