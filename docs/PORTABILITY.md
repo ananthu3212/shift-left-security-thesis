@@ -1,177 +1,134 @@
-# Using the Shift-Left Security Pipeline in Your Project
+# Reusable Workflow — Portability Guide
 
-This document explains how to adopt the reusable security scanning
-pipeline from this thesis in any GitHub-hosted Python project.
-
----
-
-## What the pipeline does
-
-On every push, the pipeline runs three security tools in sequence:
-
-| Stage | Tool | What it scans |
-|---|---|---|
-| 1 | Gitleaks | Full git history for hardcoded secrets and credentials |
-| 2 | Semgrep | Source code for vulnerabilities (SAST) |
-| 3 | Trivy | Dependencies and container image for known CVEs (SCA) |
-
-All findings are uploaded to the **GitHub Security tab** (Code scanning)
-and a summary is written to the **Actions run summary** after every push.
+This document explains how any Python project can adopt the shift-left security pipeline defined in this thesis repository without copying any tool configuration.
 
 ---
 
-## Quickstart — add to any Python project in 5 minutes
+## How it works
 
-Create `.github/workflows/security-scan.yml` in your repository:
+The reusable workflow (security-scan-reusable.yml) is a self-contained security pipeline that any GitHub repository can call via workflow_call. The consuming project needs only one workflow file — no tool installation, no configuration duplication, no knowledge of Gitleaks, Semgrep or Trivy required.
 
-```yaml
+**Consuming project:** security-scan.yml (5 lines of config)
+
+**Thesis repository:** security-scan-reusable.yml containing:
+- Secret Scanning (Gitleaks v8.18.4)
+- SAST (Semgrep v1.162.0)
+- SCA + Image Scan (Trivy)
+- Security Dashboard (GitHub Pages)
+
+---
+
+## Quick Start
+
+**Step 1** — Create .github/workflows/security-scan.yml in your repository:
+
 name: Security Scan
 
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  security-events: write
+  contents: read
+  pages: write
+  id-token: write
 
 jobs:
   security:
     uses: ananthu3212/shift-left-security-thesis/.github/workflows/security-scan-reusable.yml@main
     with:
-      docker-image-name: my-app:latest
-```
-
-That is the minimum configuration. Push this file and the pipeline
-runs automatically on the next commit.
-
----
-
-## All available inputs
-
-| Input | Required | Default | Description |
-|---|---|---|---|
-| `docker-image-name` | Yes | — | Docker image name to build and scan |
-| `semgrep-config` | No | `p/python` | Semgrep ruleset to apply |
-| `custom-rules-path` | No | `""` | Path to custom Semgrep rules directory |
-| `trivy-severity` | No | `HIGH,CRITICAL` | Severity levels to report and block on |
-| `fail-on-findings` | No | `true` | Block pipeline when findings are detected |
-
----
-
-## Full configuration example
-
-```yaml
-name: Security Scan
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  security:
-    uses: ananthu3212/shift-left-security-thesis/.github/workflows/security-scan-reusable.yml@main
-    with:
-      docker-image-name: my-flask-app:latest
+      docker-image-name: my-app-name
       semgrep-config: p/python
-      custom-rules-path: rules/
       trivy-severity: HIGH,CRITICAL
       fail-on-findings: true
-```
+
+**Step 2** — Enable GitHub Pages: Settings -> Pages -> Source: GitHub Actions
+
+**Step 3** — Push a commit. The pipeline runs automatically.
+
+**Step 4** — View your security dashboard at:
+https://YOUR_USERNAME.github.io/YOUR_REPO_NAME/
 
 ---
 
-## Adding custom Semgrep rules
+## Inputs
 
-Custom rules let you detect vulnerability patterns specific to your
-codebase that community rulesets miss. Create a `rules/` directory
-in your project root and add `.yaml` rule files:
-
-```
-my-project/
-├── rules/
-│   ├── sql-injection.yaml
-│   ├── open-redirect.yaml
-│   └── debug-mode.yaml
-├── app.py
-└── requirements.txt
-```
-
-Then pass the directory path via `custom-rules-path: rules/`.
-
-See the [Semgrep rule syntax documentation](https://semgrep.dev/docs/writing-rules/rule-syntax/)
-for how to write custom rules. The seven custom rules written for
-this thesis (in the `rules/` directory) can be used as examples.
+- docker-image-name (Required) — Name for the Docker image to build and scan
+- semgrep-config (Optional, default: p/python) — Semgrep ruleset. Use p/javascript for JS, p/java for Java
+- custom-rules-path (Optional, default: empty) — Path to a directory of custom Semgrep rules in your repo
+- trivy-severity (Optional, default: HIGH,CRITICAL) — CVE severity threshold
+- fail-on-findings (Optional, default: true) — Block pipeline when findings detected. Use false for audit mode
 
 ---
 
-## Audit-only mode
+## Operating Modes
 
-Set `fail-on-findings: false` to run the pipeline in audit mode.
-All findings are still reported and uploaded to the Security tab,
-but the pipeline does not block deployment. This is useful when
-first adopting the pipeline on an existing codebase with known
-technical debt.
+**Strict mode (recommended for production)**
+fail-on-findings: true
+Pipeline blocks when any vulnerability is detected. Developers must fix findings before merging.
 
-```yaml
-jobs:
-  security:
-    uses: ananthu3212/shift-left-security-thesis/.github/workflows/security-scan-reusable.yml@main
-    with:
-      docker-image-name: my-app:latest
-      fail-on-findings: false
-```
+**Audit mode (recommended for initial adoption)**
+fail-on-findings: false
+Pipeline reports findings but does not block. Useful when first adopting the workflow to understand the current vulnerability landscape before enforcing gates.
 
 ---
 
-## Supported languages
+## What gets scanned
 
-The pipeline is designed for Python projects but Semgrep supports
-many languages. Change the `semgrep-config` input to target a
-different language:
+Tool: Gitleaks
+What it scans: Source code for hardcoded secrets and credentials
+Version: v8.18.4
 
-| Language | Config |
-|---|---|
-| Python | `p/python` |
-| JavaScript / TypeScript | `p/javascript` |
-| Java | `p/java` |
-| Go | `p/golang` |
-| PHP | `p/php` |
-| Multi-language | `p/security-audit` |
+Tool: Semgrep
+What it scans: Python source code for security vulnerabilities
+Version: v1.162.0
 
-Gitleaks and Trivy are language-agnostic and work for any project.
+Tool: Trivy
+What it scans: Python dependencies (requirements.txt) and Docker image
+Version: latest
 
 ---
 
 ## Outputs
 
-After every run the pipeline produces:
-
-- **GitHub Security tab** — all findings with severity, file, and
-  line number, filterable by tool
-- **Actions run summary** — vulnerability count table per tool
-- **Downloadable artifacts** — raw JSON reports from each tool
-  (`gitleaks-report`, `semgrep-report`, `trivy-reports`)
+- Security dashboard — GitHub Pages URL with HTML findings report per tool
+- Gitleaks report — Artifact: gitleaks-report (JSON secret scan results)
+- Semgrep report — Artifact: semgrep-report (JSON + SARIF SAST results)
+- Trivy report — Artifact: trivy-reports (JSON + SARIF CVE results)
+- GitHub Security tab — Repository -> Security (SARIF findings from Semgrep and Trivy)
 
 ---
 
-## Requirements
+## Live Demonstration
 
-- The repository must contain a `Dockerfile` at the root
-- GitHub Actions must be enabled for the repository
-- The repository must grant `security-events: write` permission
-  (automatically inherited from the reusable workflow)
+The reusable workflow was tested on an independent repository containing a deliberately vulnerable Flask application:
+
+- Repository: https://github.com/ananthu3212/test-python-app
+- Dashboard: https://ananthu3212.github.io/test-python-app/
+- Findings detected: SQL injection (Semgrep), HIGH CVEs in Flask and Werkzeug (Trivy)
+- Result: Pipeline blocked — demonstrating that the reusable workflow correctly enforces security gates on any consuming project
 
 ---
 
-## Reference
+## Requirements for consuming projects
 
-This reusable workflow was developed as part of the thesis:
+- Repository must be public OR GitHub Actions must have access to the thesis repo
+- A Dockerfile must exist in the repository root
+- GitHub Pages must be enabled (Settings -> Pages -> Source: GitHub Actions)
+- Workflow permissions must include pages: write and id-token: write
 
-> Chandra Babu, A. (2026). *Shift-Left Security in CI/CD Pipelines:
-> Design, Implementation and Indicative Evaluation of SAST, SCA and
-> Secret Scanning Using a Containerised Flask Web Application on
-> AWS ECS Fargate*. Bachelor's thesis, Westfälische Hochschule
-> Gelsenkirchen.
+---
 
-Source: [github.com/ananthu3212/shift-left-security-thesis](https://github.com/ananthu3212/shift-left-security-thesis)
+## Portability classification of custom Semgrep rules
+
+The 7 custom rules in rules/ of the thesis repository can optionally be used by consuming projects via the custom-rules-path input. Each rule's portability:
+
+- deserialization.yaml — Portable — Any Python app using pickle
+- path-traversal.yaml — Portable — Any Flask app with file operations
+- open-redirect.yaml — Portable — Any Flask app with redirects
+- sensitive-data-exposure.yaml — Flask-specific — Uses SQLite trace callback pattern
+- cors-wildcard.yaml — Portable — Any Flask app using flask-cors
+- csp-unsafe-inline.yaml — Portable — Any Flask app setting CSP headers
+- flask-debug-mode.yaml — Portable — Any Flask app
