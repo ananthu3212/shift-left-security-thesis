@@ -81,3 +81,12 @@ generic-dashboard/
 .DS_Store
 Thumbs.db
 desktop.ini
+# Local databases
+database.db
+
+# Local scan outputs
+evaluation/
+
+# Terraform cache and IDE
+terraform/.terraform/
+terraform/.idea/
