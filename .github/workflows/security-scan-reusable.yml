@@ -1,20 +1,21 @@
 # ================================================================
-# security-scan-reusable.yml
+# security-scan-reusable.yml — Reusable Shift-Left Security Pipeline
 #
-# Reusable Shift-Left Security Pipeline
+# A reusable workflow that any Python project can call to get
+# full shift-left security scanning without any tool configuration.
 #
-# This workflow can be called from ANY repository to integrate
-# SAST, SCA, and Secret Scanning into an existing CI/CD pipeline.
+# Runs: Gitleaks (secrets) → Semgrep (SAST) → Trivy (SCA)
+# Generates a generic security findings dashboard as an artifact.
 #
-# Usage in any project:
-#
+# Usage in any repo:
 #   jobs:
 #     security:
 #       uses: ananthu3212/shift-left-security-thesis/.github/workflows/security-scan-reusable.yml@main
 #       with:
-#         docker-image-name: my-app:latest
+#         docker-image-name: my-app
 #         semgrep-config: p/python
 #         trivy-severity: HIGH,CRITICAL
+#         fail-on-findings: true
 #
 # Thesis: Shift-Left Security in CI/CD Pipelines
 # Author: Ananthu Chandra Babu
@@ -26,56 +27,30 @@ name: Shift-Left Security Scan (Reusable)
 on:
   workflow_call:
     inputs:
-
       docker-image-name:
-        description: >
-          Name for the Docker image to build and scan.
-          Example: my-flask-app:latest
+        description: 'Name for the Docker image to build and scan'
         required: true
         type: string
-
       semgrep-config:
-        description: >
-          Primary Semgrep ruleset to apply.
-          Examples: p/python, p/javascript, p/security-audit, p/owasp-top-ten
+        description: 'Semgrep ruleset (e.g. p/python, p/javascript)'
         required: false
         type: string
         default: 'p/python'
-
       custom-rules-path:
-        description: >
-          Path to a directory containing custom Semgrep rule files (.yaml).
-          Leave empty to skip custom rules and use only the primary config.
-          Example: rules/
+        description: 'Path to custom Semgrep rules directory (optional)'
         required: false
         type: string
         default: ''
-
       trivy-severity:
-        description: >
-          Comma-separated severity levels Trivy should report and block on.
-          Options: CRITICAL, HIGH, MEDIUM, LOW
-          Lower thresholds increase coverage but may increase noise.
+        description: 'CVE severity threshold (e.g. HIGH,CRITICAL)'
         required: false
         type: string
         default: 'HIGH,CRITICAL'
-
       fail-on-findings:
-        description: >
-          Whether to exit with code 1 (blocking the pipeline) when
-          security findings are detected. Set to false to run in
-          audit-only mode without blocking deployment.
+        description: 'Block pipeline if findings are detected'
         required: false
         type: boolean
         default: true
-
-    outputs:
-      semgrep-findings:
-        description: 'Number of Semgrep findings detected'
-        value: ${{ jobs.sast.outputs.findings-count }}
-      gitleaks-findings:
-        description: 'Number of secrets detected by Gitleaks'
-        value: ${{ jobs.secret-scanning.outputs.findings-count }}
 
 permissions:
   security-events: write
@@ -85,69 +60,33 @@ permissions:
 
 jobs:
   # ================================================================
-  # JOB 1: Secret Scanning — Gitleaks
-  # Scans full git history for hardcoded secrets, API keys,
-  # credentials and tokens. Runs first because a leaked secret
-  # is the highest-priority finding — no point scanning code
-  # that already has credentials exposed.
+  # JOB 1 — Secret Scanning
   # ================================================================
   secret-scanning:
     name: Secret Scanning (Gitleaks)
     runs-on: ubuntu-latest
-    outputs:
-      findings-count: ${{ steps.count.outputs.count }}
-
     steps:
-      - name: Checkout code (full history)
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        id: gitleaks
         run: |
-          curl -sSfL \
-            https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
-            | tar -xz
-
-          ./gitleaks detect \
-            --source . \
-            --verbose \
-            --report-format json \
-            --report-path gitleaks-report.json || true
-
-      - name: Count findings and write summary
-        id: count
-        run: |
-          COUNT=$(python3 -c "
-          import json, os
-          try:
-              data = json.load(open('gitleaks-report.json'))
-              print(len(data))
-          except:
-              print(0)
-          ")
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
+          ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
+          exit_code=$?
 
           echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
-          if [ "$COUNT" -eq 0 ]; then
+          if [ $exit_code -eq 0 ]; then
             echo "✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
           else
+            COUNT=$(python3 -c "import json; data=json.load(open('gitleaks-report.json')); print(len(data))" 2>/dev/null || echo "1+")
             echo "❌ **$COUNT secret(s) detected**" >> $GITHUB_STEP_SUMMARY
-            if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
-              echo "Pipeline blocked." >> $GITHUB_STEP_SUMMARY
-            else
-              echo "⚠️ Running in audit-only mode — pipeline not blocked." >> $GITHUB_STEP_SUMMARY
-            fi
           fi
 
-      - name: Block pipeline if findings exist
-        if: ${{ inputs.fail-on-findings }}
-        run: |
-          COUNT=${{ steps.count.outputs.count }}
-          if [ "$COUNT" -gt 0 ]; then
-            echo "Gitleaks detected $COUNT secret(s). Blocking pipeline."
-            exit 1
+          if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
+            exit $exit_code
           fi
 
       - name: Upload Gitleaks report
@@ -158,66 +97,42 @@ jobs:
           path: gitleaks-report.json
 
   # ================================================================
-  # JOB 2: SAST — Semgrep
-  # Static Application Security Testing on source code.
-  # Runs the primary config (e.g. p/python) and optionally
-  # a custom rules directory provided by the caller.
-  # Custom rules allow project-specific vulnerability patterns
-  # beyond what community rulesets cover.
+  # JOB 2 — SAST
   # ================================================================
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
     needs: secret-scanning
     if: always()
-    outputs:
-      findings-count: ${{ steps.count.outputs.count }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Build Semgrep config string
-        id: config
+        id: semgrep-config
         run: |
           CONFIG="--config=${{ inputs.semgrep-config }}"
           if [ -n "${{ inputs.custom-rules-path }}" ] && [ -d "${{ inputs.custom-rules-path }}" ]; then
             CONFIG="$CONFIG --config=${{ inputs.custom-rules-path }}"
-            echo "Custom rules found at ${{ inputs.custom-rules-path }} — included in scan"
-          else
-            echo "No custom rules path provided or directory not found — using primary config only"
           fi
           echo "config=$CONFIG" >> $GITHUB_OUTPUT
 
-      - name: Run Semgrep — SARIF output
+      - name: Run Semgrep
         run: |
-          pip install semgrep --quiet
-          semgrep ${{ steps.config.outputs.config }} --sarif -o semgrep.sarif . || true
+          pip install semgrep==1.162.0
 
-      - name: Run Semgrep — JSON output
-        run: |
-          semgrep ${{ steps.config.outputs.config }} --json -o semgrep-report.json . || true
+          semgrep ${{ steps.semgrep-config.outputs.config }} --sarif -o semgrep.sarif . || true
 
-      - name: Count findings and write summary
-        id: count
-        run: |
-          COUNT=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('semgrep-report.json'))
-              print(len(data.get('results', [])))
-          except:
-              print(0)
-          ")
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          semgrep ${{ steps.semgrep-config.outputs.config }} --json -o semgrep-report.json --error .
+          SEMGREP_EXIT=$?
 
           echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
-          echo "Config: \`${{ inputs.semgrep-config }}\`" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$COUNT" -eq 0 ]; then
+          echo "Config: ${{ inputs.semgrep-config }}" >> $GITHUB_STEP_SUMMARY
+          FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+          if [ $SEMGREP_EXIT -eq 0 ]; then
             echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ **$COUNT finding(s) detected**" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **$FINDINGS finding(s) detected**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
             echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
@@ -230,6 +145,10 @@ jobs:
               line = r['start']['line']
               print(f'| {rule} | \`{path}\` | {line} |')
           " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+          fi
+
+          if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
+            exit $SEMGREP_EXIT
           fi
 
       - name: Upload Semgrep SARIF to GitHub Security tab
@@ -248,35 +167,20 @@ jobs:
             semgrep-report.json
             semgrep.sarif
 
-      - name: Block pipeline if findings exist
-        if: ${{ inputs.fail-on-findings }}
-        run: |
-          COUNT=${{ steps.count.outputs.count }}
-          if [ "$COUNT" -gt 0 ]; then
-            echo "Semgrep detected $COUNT finding(s). Blocking pipeline."
-            exit 1
-          fi
-
   # ================================================================
-  # JOB 3: SCA + Container Image Scan — Trivy
-  # Software Composition Analysis on dependencies and
-  # container image scanning for OS-level CVEs.
-  # Runs after SAST because it requires building the Docker image.
-  # The severity threshold is configurable — lower thresholds
-  # catch more CVEs but increase alert noise.
+  # JOB 3 — SCA + Image Scan
   # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
     runs-on: ubuntu-latest
     needs: sast
     if: always()
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -t ${{ inputs.docker-image-name }} .
+        run: docker build -t ${{ inputs.docker-image-name }}:scan .
 
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
@@ -298,73 +202,51 @@ jobs:
           severity: ${{ inputs.trivy-severity }}
           exit-code: 0
 
-      - name: Upload Trivy FS SARIF to GitHub Security tab
+      - name: Upload Trivy SARIF to GitHub Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-fs.sarif
-          category: trivy-filesystem
-
-      - name: Run Trivy image scan — JSON
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ inputs.docker-image-name }}
-          format: json
-          output: trivy-image-report.json
-          severity: ${{ inputs.trivy-severity }}
-          exit-code: 0
-
-      - name: Run Trivy image scan — SARIF
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ inputs.docker-image-name }}
-          format: sarif
-          output: trivy-image.sarif
-          severity: ${{ inputs.trivy-severity }}
-          exit-code: 0
-
-      - name: Upload Trivy image SARIF to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
+          category: trivy
 
       - name: Write Trivy summary and check findings
         if: always()
         run: |
           echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
-          echo "Severity threshold: \`${{ inputs.trivy-severity }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Severity threshold: ${{ inputs.trivy-severity }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
 
-          FS_CRITICAL=$(python3 -c "
+          CRITICAL=$(python3 -c "
           import json
           data = json.load(open('trivy-fs-report.json'))
           vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL']
           print(len(vulns))" 2>/dev/null || echo "0")
 
-          FS_HIGH=$(python3 -c "
+          HIGH=$(python3 -c "
           import json
           data = json.load(open('trivy-fs-report.json'))
           vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
           print(len(vulns))" 2>/dev/null || echo "0")
 
-          echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
 
-          TOTAL=$((FS_CRITICAL + FS_HIGH))
+          TOTAL=$((CRITICAL + HIGH))
           if [ $TOTAL -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
             echo "❌ **$TOTAL finding(s) detected**" >> $GITHUB_STEP_SUMMARY
             if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
-              exit 1
+              echo "Pipeline blocked." >> $GITHUB_STEP_SUMMARY
             else
               echo "⚠️ Running in audit-only mode — pipeline not blocked." >> $GITHUB_STEP_SUMMARY
             fi
           else
-            echo "✅ No findings at this severity threshold" >> $GITHUB_STEP_SUMMARY
+            echo "✅ No findings at ${{ inputs.trivy-severity }} threshold" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          if [ "${{ inputs.fail-on-findings }}" = "true" ] && [ $TOTAL -gt 0 ]; then
+            exit 1
           fi
 
       - name: Upload Trivy reports
@@ -374,25 +256,16 @@ jobs:
           name: trivy-reports
           path: |
             trivy-fs-report.json
-            trivy-image-report.json
             trivy-fs.sarif
-            trivy-image.sarif
 
   # ================================================================
-  # JOB 4: Generic Security Dashboard
-  # Generates a findings dashboard that works for ANY project.
-  # No ground truth required — shows raw findings from all tools
-  # grouped by severity, OWASP category and tool.
-  # Published to GitHub Pages automatically after every scan.
+  # JOB 4 — Generate Security Dashboard
   # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
     needs: [secret-scanning, sast, sca-and-image]
     if: always()
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -402,22 +275,35 @@ jobs:
         with:
           path: reports/
 
-      - name: Generate generic findings dashboard
-        run: python3 scripts/generate_generic_report.py
-
-      - name: Write dashboard link to summary
+      - name: Download generic dashboard generator from thesis repo
         run: |
-          REPO="${{ github.repository }}"
-          OWNER=$(echo $REPO | cut -d'/' -f1)
-          REPONAME=$(echo $REPO | cut -d'/' -f2)
+          curl -sSfL \
+            https://raw.githubusercontent.com/ananthu3212/shift-left-security-thesis/main/scripts/generate_generic_report.py \
+            -o generate_generic_report.py
+
+      - name: Generate security dashboard
+        run: python3 generate_generic_report.py
+
+      - name: Write dashboard summary
+        run: |
           echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "Published at: **https://${OWNER}.github.io/${REPONAME}/**" >> $GITHUB_STEP_SUMMARY
+          echo "Generic security findings dashboard available as artifact: \`generic-security-dashboard\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload dashboard artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generic-security-dashboard
+          path: generic-dashboard/index.html
 
       - name: Upload Pages artifact
+        if: always()
         uses: actions/upload-pages-artifact@v3
         with:
           path: generic-dashboard/
 
       - name: Deploy to GitHub Pages
+        if: always()
         id: deployment
+        continue-on-error: true
         uses: actions/deploy-pages@v4
