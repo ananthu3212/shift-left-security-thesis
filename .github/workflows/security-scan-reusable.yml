@@ -4,7 +4,7 @@
 # A reusable workflow that any Python project can call to get
 # full shift-left security scanning without any tool configuration.
 #
-# Runs: Gitleaks (secrets) → Semgrep (SAST) → Trivy (SCA)
+# Runs: Gitleaks (secrets) + tfsec (IaC) → Semgrep (SAST) → Trivy (SCA)
 # Generates a generic security findings dashboard on GitHub Pages.
 #
 # Usage in any repo:
@@ -16,6 +16,7 @@
 #         semgrep-config: p/python
 #         trivy-severity: HIGH,CRITICAL
 #         fail-on-findings: true
+#         enable-flask-rules: false
 #
 # Thesis: Shift-Left Security in CI/CD Pipelines
 # Author: Ananthu Chandra Babu
@@ -37,10 +38,15 @@ on:
         type: string
         default: 'p/python'
       custom-rules-path:
-        description: 'Path to custom Semgrep rules directory (optional)'
+        description: 'Path to custom Semgrep rules directory in the calling repo (optional)'
         required: false
         type: string
         default: ''
+      enable-flask-rules:
+        description: 'Download and apply Flask-specific custom Semgrep rules from the thesis repository. Enable for Flask projects only — may produce false positives on non-Flask codebases.'
+        required: false
+        type: boolean
+        default: false
       trivy-severity:
         description: 'CVE severity threshold (e.g. HIGH,CRITICAL)'
         required: false
@@ -72,6 +78,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
+        # Pinned to v8.18.4 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
           ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
@@ -97,27 +104,111 @@ jobs:
           path: gitleaks-report.json
 
   # ================================================================
-  # JOB 2 — SAST
+  # JOB 2 — IaC Security Scan
+  # ================================================================
+  iac-scanning:
+    name: IaC Security Scan (tfsec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tfsec on Terraform infrastructure
+        # Pinned to v1.28.11 — version used during thesis evaluation
+        # Runs with --soft-fail so IaC findings do not block the pipeline
+        # independently — blocking is controlled by fail-on-findings input
+        run: |
+          curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
+          chmod +x tfsec
+
+          if [ -d "terraform" ]; then
+            ./tfsec terraform/ --format json --out tfsec-report.json --soft-fail || true
+          else
+            echo '{"results":[]}' > tfsec-report.json
+            echo "No terraform/ directory found — IaC scan skipped." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "## 🏗️ IaC Security Scan (tfsec)" >> $GITHUB_STEP_SUMMARY
+
+          if [ -s tfsec-report.json ]; then
+            CRITICAL=$(python3 -c "
+          import json
+          data = json.load(open('tfsec-report.json'))
+          results = data.get('results') or []
+          print(sum(1 for r in results if r.get('severity') == 'CRITICAL'))" 2>/dev/null || echo "0")
+
+            HIGH=$(python3 -c "
+          import json
+          data = json.load(open('tfsec-report.json'))
+          results = data.get('results') or []
+          print(sum(1 for r in results if r.get('severity') == 'HIGH'))" 2>/dev/null || echo "0")
+
+            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+
+            TOTAL=$((CRITICAL + HIGH))
+            if [ $TOTAL -gt 0 ]; then
+              echo "❌ **$TOTAL CRITICAL/HIGH IaC finding(s) detected**" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Upload tfsec report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfsec-report
+          path: tfsec-report.json
+
+  # ================================================================
+  # JOB 3 — SAST
   # ================================================================
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
-    needs: secret-scanning
+    needs: [secret-scanning, iac-scanning]
     if: always()
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Download Flask-specific custom rules from thesis repository
+        # Only runs when enable-flask-rules is true.
+        # Downloads 7 custom Semgrep rules targeting Flask vulnerability patterns:
+        # insecure deserialization, path traversal, open redirect, sensitive data
+        # exposure, CORS wildcard, CSP unsafe-inline, and debug mode.
+        # These rules are specific to Flask — do not enable for non-Flask projects.
+        if: inputs.enable-flask-rules
+        run: |
+          mkdir -p thesis-custom-rules
+          BASE_URL="https://raw.githubusercontent.com/ananthu3212/shift-left-security-thesis/main/rules"
+          for rule in deserialization path-traversal open-redirect \
+                      sensitive-data-exposure cors-wildcard \
+                      csp-unsafe-inline flask-debug-mode; do
+            curl -sSfL "${BASE_URL}/${rule}.yaml" \
+              -o "thesis-custom-rules/${rule}.yaml"
+          done
+          echo "## ⚡ Flask Custom Rules" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Downloaded 7 Flask-specific custom Semgrep rules from thesis repository" >> $GITHUB_STEP_SUMMARY
+
       - name: Build Semgrep config string
         id: semgrep-config
         run: |
           CONFIG="--config=${{ inputs.semgrep-config }}"
-          if [ -n "${{ inputs.custom-rules-path }}" ] && [ -d "${{ inputs.custom-rules-path }}" ]; then
+          if [ -n "${{ inputs.custom-rules-path }}" ] && \
+             [ -d "${{ inputs.custom-rules-path }}" ]; then
             CONFIG="$CONFIG --config=${{ inputs.custom-rules-path }}"
+          fi
+          if [ -d "thesis-custom-rules" ]; then
+            CONFIG="$CONFIG --config=thesis-custom-rules"
           fi
           echo "config=$CONFIG" >> $GITHUB_OUTPUT
 
       - name: Run Semgrep
+        # Pinned to v1.162.0 — version used during thesis evaluation
         run: |
           pip install semgrep==1.162.0
 
@@ -129,8 +220,13 @@ jobs:
           set -e
 
           echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
-          echo "Config: ${{ inputs.semgrep-config }}" >> $GITHUB_STEP_SUMMARY
-          FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+          echo "Config: ${{ steps.semgrep-config.outputs.config }}" >> $GITHUB_STEP_SUMMARY
+
+          FINDINGS=$(python3 -c "
+          import json
+          data=json.load(open('semgrep-report.json'))
+          print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+
           if [ $SEMGREP_EXIT -eq 0 ]; then
             echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
           else
@@ -170,7 +266,7 @@ jobs:
             semgrep.sarif
 
   # ================================================================
-  # JOB 3 — SCA + Image Scan
+  # JOB 4 — SCA + Image Scan
   # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
@@ -221,13 +317,17 @@ jobs:
           CRITICAL=$(python3 -c "
           import json
           data = json.load(open('trivy-fs-report.json'))
-          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL']
+          vulns = [v for r in data.get('Results', [])
+                   for v in (r.get('Vulnerabilities') or [])
+                   if v.get('Severity') == 'CRITICAL']
           print(len(vulns))" 2>/dev/null || echo "0")
 
           HIGH=$(python3 -c "
           import json
           data = json.load(open('trivy-fs-report.json'))
-          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
+          vulns = [v for r in data.get('Results', [])
+                   for v in (r.get('Vulnerabilities') or [])
+                   if v.get('Severity') == 'HIGH']
           print(len(vulns))" 2>/dev/null || echo "0")
 
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
@@ -261,12 +361,12 @@ jobs:
             trivy-fs.sarif
 
   # ================================================================
-  # JOB 4 — Generate Security Dashboard
+  # JOB 5 — Generate Security Dashboard
   # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
-    needs: [secret-scanning, sast, sca-and-image]
+    needs: [secret-scanning, iac-scanning, sast, sca-and-image]
     if: always()
     environment:
       name: github-pages
