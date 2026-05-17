@@ -82,7 +82,12 @@ def parse_semgrep(data):
             "message": r.get("extra", {}).get("message", "")[:120],
             "cwe": cwe,
             "owasp": owasp,
-            "ruleset": "custom" if rule_id.startswith("rules.") else "default",
+            # Custom rules are loaded from 'rules/' (hardened pipeline)
+            # or from 'thesis-custom-rules/' (reusable workflow download)
+            "ruleset": "custom" if (
+                rule_id.startswith("rules.") or
+                rule_id.startswith("thesis-custom-rules.")
+            ) else "default",
         })
     findings.sort(key=lambda x: SEVERITY_ORDER.get(x["severity"], 4))
     return findings
