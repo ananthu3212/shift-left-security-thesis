@@ -3,9 +3,9 @@
 generate_generic_report.py — Generic Security Findings Dashboard
 
 Works for ANY project. No hardcoded ground truth required.
-Reads Gitleaks, Semgrep, Trivy and tfsec JSON reports and generates
-a findings dashboard showing severity breakdown, tool results,
-and OWASP Top 10 coverage.
+Reads Gitleaks, Semgrep, Trivy, tfsec and OWASP ZAP JSON reports
+and generates a findings dashboard showing severity breakdown,
+tool results, and OWASP Top 10 coverage.
 
 This script is part of the reusable pipeline and is called
 automatically after every scan. No configuration needed.
@@ -82,8 +82,6 @@ def parse_semgrep(data):
             "message": r.get("extra", {}).get("message", "")[:120],
             "cwe": cwe,
             "owasp": owasp,
-            # Custom rules are loaded from 'rules/' (hardened pipeline)
-            # or from 'thesis-custom-rules/' (reusable workflow download)
             "ruleset": "custom" if (
                 rule_id.startswith("rules.") or
                 rule_id.startswith("thesis-custom-rules.")
@@ -144,6 +142,28 @@ def parse_tfsec(data):
     return findings
 
 
+def parse_zap(data):
+    """Parse OWASP ZAP JSON report and return list of alerts sorted by risk."""
+    if not data:
+        return []
+    risk_map = {"3": "HIGH", "2": "MEDIUM", "1": "LOW", "0": "INFORMATIONAL"}
+    alerts = []
+    for site in data.get("site", []):
+        for alert in site.get("alerts", []):
+            risk_code = str(alert.get("riskcode", "0"))
+            alerts.append({
+                "name": alert.get("name", alert.get("alert", "")),
+                "risk": risk_map.get(risk_code, "INFORMATIONAL"),
+                "risk_code": int(risk_code),
+                "count": int(alert.get("count", "1")),
+                "cwe": alert.get("cweid", "—"),
+                "plugin_id": alert.get("pluginid", ""),
+                "solution": (alert.get("solution", "") or "")[:200],
+            })
+    alerts.sort(key=lambda x: x["risk_code"], reverse=True)
+    return alerts
+
+
 def severity_counts(items, key="severity"):
     counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
     for item in items:
@@ -153,7 +173,8 @@ def severity_counts(items, key="severity"):
     return counts
 
 
-def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_findings,
+def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
+                  tfsec_findings, zap_findings,
                   commit_sha, run_number, repo_name):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     total_findings = (len(semgrep_findings) + len(gitleaks_findings) +
@@ -192,6 +213,13 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
     # Custom vs default
     custom_count = sum(1 for f in semgrep_findings if f["ruleset"] == "custom")
     default_count = sum(1 for f in semgrep_findings if f["ruleset"] == "default")
+
+    # ZAP counts
+    zap_total  = len(zap_findings)
+    zap_high   = sum(1 for a in zap_findings if a["risk"] == "HIGH")
+    zap_medium = sum(1 for a in zap_findings if a["risk"] == "MEDIUM")
+    zap_low    = sum(1 for a in zap_findings if a["risk"] == "LOW")
+    zap_info   = sum(1 for a in zap_findings if a["risk"] == "INFORMATIONAL")
 
     # Semgrep rows
     semgrep_rows = ""
@@ -272,6 +300,88 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
     if not tfsec_rows:
         tfsec_rows = '<tr><td colspan="5" class="text-center text-muted">No IaC findings detected</td></tr>'
 
+    # ZAP rows
+    zap_rows = ""
+    if zap_findings:
+        for a in zap_findings:
+            risk_color = (
+                "danger"    if a["risk"] == "HIGH"          else
+                "warning"   if a["risk"] == "MEDIUM"        else
+                "info"      if a["risk"] == "LOW"           else
+                "secondary"
+            )
+            zap_rows += f"""
+        <tr>
+            <td><span class="badge bg-{risk_color}">{a["risk"]}</span></td>
+            <td>{a["name"]}</td>
+            <td><span class="badge bg-dark">CWE-{a["cwe"]}</span></td>
+            <td>{a["count"]}</td>
+            <td><small class="text-muted">{a["solution"][:150]}</small></td>
+        </tr>"""
+    else:
+        zap_rows = '<tr><td colspan="5" class="text-center text-muted">DAST not enabled — set enable-dast: true in your workflow to activate ZAP scanning</td></tr>'
+
+    # ZAP section — show only when DAST was enabled
+    zap_section = f"""
+  <h5 class="section-title">🔒 DAST Results (OWASP ZAP 2.17.0)</h5>
+  <div class="row g-3 mb-3">
+    <div class="col-md-3">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;text-align:center;">
+        <div style="font-size:1.8rem;font-weight:700;color:#f85149;">{zap_high}</div>
+        <div style="font-size:0.85rem;color:#8b949e;">🔴 High Risk</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;text-align:center;">
+        <div style="font-size:1.8rem;font-weight:700;color:#e3b341;">{zap_medium}</div>
+        <div style="font-size:0.85rem;color:#8b949e;">🟡 Medium Risk</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;text-align:center;">
+        <div style="font-size:1.8rem;font-weight:700;color:#388bfd;">{zap_low}</div>
+        <div style="font-size:0.85rem;color:#8b949e;">🔵 Low Risk</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem;text-align:center;">
+        <div style="font-size:1.8rem;font-weight:700;color:#8b949e;">{zap_info}</div>
+        <div style="font-size:0.85rem;color:#8b949e;">ℹ️ Informational</div>
+      </div>
+    </div>
+  </div>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr>
+        <th>Risk</th><th>Alert</th><th>CWE</th><th>Instances</th><th>Solution</th>
+      </tr></thead>
+      <tbody>{zap_rows}</tbody>
+    </table>
+  </div>"""
+
+    # ZAP metric card — shown always
+    zap_metric_card = f"""
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#a371f7">{zap_total}</div>
+        <div class="metric-label">🔒 DAST Alerts (ZAP)</div>
+        <div class="mt-2">
+          <small class="text-danger">{zap_high} High</small> &nbsp;
+          <small class="text-warning">{zap_medium} Medium</small> &nbsp;
+          <small class="text-info">{zap_low} Low</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-9">
+      <div class="metric-card" style="text-align:left;">
+        <small class="text-muted">
+          {"<strong style='color:#a371f7'>DAST scan completed.</strong> ZAP performed a baseline scan against the running application via HTTP. Dynamic analysis complements static tools by detecting runtime security issues such as missing security headers and CORS misconfigurations." if zap_findings else "<strong style='color:#8b949e'>DAST not enabled.</strong> Add <code>enable-dast: true</code>, <code>app-start-command</code>, and <code>app-port</code> to your workflow to activate OWASP ZAP dynamic scanning."}
+        </small>
+      </div>
+    </div>
+  </div>"""
+
     html = f"""<!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -315,12 +425,12 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
       <strong style="color:#e6edf3">{len(gitleaks_findings)}</strong> secret(s) &nbsp;·&nbsp;
       <strong style="color:#e6edf3">{len(trivy_cves)}</strong> CVEs &nbsp;·&nbsp;
       <strong style="color:#e6edf3">{len(tfsec_findings)}</strong> IaC finding(s) &nbsp;·&nbsp;
+      <strong style="color:#a371f7">{zap_total}</strong> DAST alert(s) &nbsp;·&nbsp;
       <strong style="color:#3fb950">{custom_count}</strong> detected by custom rules
     </p>
   </div>
 
-  <!-- Metric Cards -->
-  <div class="row g-3 mb-4">
+  <div class="row g-3 mb-3">
     <div class="col-md-3">
       <div class="metric-card">
         <div class="metric-value" style="color:#f85149">{len(semgrep_findings)}</div>
@@ -360,7 +470,8 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
     </div>
   </div>
 
-  <!-- Charts -->
+  {zap_metric_card}
+
   <div class="row g-4 mb-4">
     <div class="col-md-4">
       <div class="chart-container">
@@ -382,7 +493,6 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
     </div>
   </div>
 
-  <!-- Semgrep -->
   <h5 class="section-title">🔍 SAST Findings (Semgrep)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered table-hover">
@@ -394,7 +504,6 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
     </table>
   </div>
 
-  <!-- Gitleaks -->
   <h5 class="section-title">🔑 Secret Scanning (Gitleaks)</h5>
   <div class="table-responsive mb-4">
     <table class="table table-bordered">
@@ -405,7 +514,6 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
     </table>
   </div>
 
-  <!-- Trivy -->
   <h5 class="section-title">📦 CVEs (Trivy)</h5>
   <div class="table-responsive mb-2">
     <table class="table table-bordered">
@@ -418,7 +526,6 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
   </div>
   {trivy_note}
 
-  <!-- tfsec -->
   <h5 class="section-title">🏗️ IaC Security Findings (tfsec)</h5>
   <p class="text-muted small mb-3">
     Infrastructure-as-code security findings from Terraform source analysis.
@@ -434,6 +541,8 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves, tfsec_finding
       <tbody>{tfsec_rows}</tbody>
     </table>
   </div>
+
+  {zap_section}
 
   <footer class="text-center text-muted py-4 mt-4"
           style="border-top:1px solid #30363d;font-size:0.8rem;">
@@ -512,13 +621,15 @@ def main():
 
     semgrep_path  = base / "semgrep-report" / "semgrep-report.json"
     gitleaks_path = base / "gitleaks-report" / "gitleaks-report.json"
-    trivy_fs_path = base / "trivy-reports" / "trivy-fs-report.json"
-    tfsec_path    = base / "tfsec-report" / "tfsec-report.json"
+    trivy_fs_path = base / "trivy-reports"   / "trivy-fs-report.json"
+    tfsec_path    = base / "tfsec-report"    / "tfsec-report.json"
+    zap_path      = base / "zap-report"      / "zap-report.json"
 
     semgrep_data  = load_json(semgrep_path)  or {"results": []}
     gitleaks_data = load_json(gitleaks_path) or []
     trivy_data    = load_json(trivy_fs_path) or {"Results": []}
     tfsec_data    = load_json(tfsec_path)    or {"results": []}
+    zap_data      = load_json(zap_path)      or {}
 
     commit_sha = os.environ.get("GITHUB_SHA", "local")
     run_number = os.environ.get("GITHUB_RUN_NUMBER", "0")
@@ -528,9 +639,11 @@ def main():
     gitleaks_findings = parse_gitleaks(gitleaks_data)
     trivy_cves        = parse_trivy(trivy_data)
     tfsec_findings    = parse_tfsec(tfsec_data)
+    zap_findings      = parse_zap(zap_data)
 
     html = generate_html(
-        semgrep_findings, gitleaks_findings, trivy_cves, tfsec_findings,
+        semgrep_findings, gitleaks_findings, trivy_cves,
+        tfsec_findings, zap_findings,
         commit_sha, run_number, repo_name
     )
 
@@ -544,6 +657,7 @@ def main():
     print(f"Gitleaks findings: {len(gitleaks_findings)}")
     print(f"Trivy CVEs:        {len(trivy_cves)}")
     print(f"tfsec findings:    {len(tfsec_findings)}")
+    print(f"ZAP alerts:        {len(zap_findings)}")
 
 
 if __name__ == "__main__":
