@@ -1,22 +1,8 @@
 # ================================================================
 # security-scan-reusable.yml — Reusable Shift-Left Security Pipeline
 #
-# A reusable workflow that any Python project can call to get
-# full shift-left security scanning without any tool configuration.
-#
 # Runs: Gitleaks (secrets) + tfsec (IaC) → Semgrep (SAST) → Trivy (SCA)
-# Generates a generic security findings dashboard on GitHub Pages.
-#
-# Usage in any repo:
-#   jobs:
-#     security:
-#       uses: ananthu3212/shift-left-security-thesis/.github/workflows/security-scan-reusable.yml@main
-#       with:
-#         docker-image-name: my-app
-#         semgrep-config: p/python
-#         trivy-severity: HIGH,CRITICAL
-#         fail-on-findings: true
-#         enable-flask-rules: false
+#       → OWASP ZAP (DAST, optional) → Dashboard
 #
 # Thesis: Shift-Left Security in CI/CD Pipelines
 # Author: Ananthu Chandra Babu
@@ -43,7 +29,7 @@ on:
         type: string
         default: ''
       enable-flask-rules:
-        description: 'Download and apply Flask-specific custom Semgrep rules from the thesis repository. Enable for Flask projects only — may produce false positives on non-Flask codebases.'
+        description: 'Download and apply Flask-specific custom Semgrep rules from the thesis repository.'
         required: false
         type: boolean
         default: false
@@ -57,6 +43,21 @@ on:
         required: false
         type: boolean
         default: true
+      enable-dast:
+        description: 'Run OWASP ZAP DAST baseline scan against the running application. Requires the application to be startable on the runner.'
+        required: false
+        type: boolean
+        default: false
+      app-start-command:
+        description: 'Command to start the application for DAST scanning (e.g. python app.py). Only used when enable-dast is true.'
+        required: false
+        type: string
+        default: 'python app.py'
+      app-port:
+        description: 'Port the application listens on for DAST scanning. Only used when enable-dast is true.'
+        required: false
+        type: string
+        default: '5000'
 
 permissions:
   security-events: write
@@ -65,9 +66,7 @@ permissions:
   id-token: write
 
 jobs:
-  # ================================================================
-  # JOB 1 — Secret Scanning
-  # ================================================================
+
   secret-scanning:
     name: Secret Scanning (Gitleaks)
     runs-on: ubuntu-latest
@@ -78,7 +77,6 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        # Pinned to v8.18.4 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
           ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
@@ -103,9 +101,6 @@ jobs:
           name: gitleaks-report
           path: gitleaks-report.json
 
-  # ================================================================
-  # JOB 2 — IaC Security Scan
-  # ================================================================
   iac-scanning:
     name: IaC Security Scan (tfsec)
     runs-on: ubuntu-latest
@@ -114,9 +109,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run tfsec on Terraform infrastructure
-        # Pinned to v1.28.11 — version used during thesis evaluation
-        # Runs with --soft-fail so IaC findings do not block the pipeline
-        # independently — blocking is controlled by fail-on-findings input
         run: |
           curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
           chmod +x tfsec
@@ -130,30 +122,28 @@ jobs:
 
           echo "## 🏗️ IaC Security Scan (tfsec)" >> $GITHUB_STEP_SUMMARY
 
-          if [ -s tfsec-report.json ]; then
-            CRITICAL=$(python3 -c "
+          CRITICAL=$(python3 -c "
           import json
           data = json.load(open('tfsec-report.json'))
           results = data.get('results') or []
           print(sum(1 for r in results if r.get('severity') == 'CRITICAL'))" 2>/dev/null || echo "0")
 
-            HIGH=$(python3 -c "
+          HIGH=$(python3 -c "
           import json
           data = json.load(open('tfsec-report.json'))
           results = data.get('results') or []
           print(sum(1 for r in results if r.get('severity') == 'HIGH'))" 2>/dev/null || echo "0")
 
-            echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-            echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
-            echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
 
-            TOTAL=$((CRITICAL + HIGH))
-            if [ $TOTAL -gt 0 ]; then
-              echo "❌ **$TOTAL CRITICAL/HIGH IaC finding(s) detected**" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
-            fi
+          TOTAL=$((CRITICAL + HIGH))
+          if [ $TOTAL -gt 0 ]; then
+            echo "❌ **$TOTAL CRITICAL/HIGH IaC finding(s) detected**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload tfsec report
@@ -163,9 +153,6 @@ jobs:
           name: tfsec-report
           path: tfsec-report.json
 
-  # ================================================================
-  # JOB 3 — SAST
-  # ================================================================
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
@@ -176,11 +163,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download Flask-specific custom rules from thesis repository
-        # Only runs when enable-flask-rules is true.
-        # Downloads 7 custom Semgrep rules targeting Flask vulnerability patterns:
-        # insecure deserialization, path traversal, open redirect, sensitive data
-        # exposure, CORS wildcard, CSP unsafe-inline, and debug mode.
-        # These rules are specific to Flask — do not enable for non-Flask projects.
         if: inputs.enable-flask-rules
         run: |
           mkdir -p thesis-custom-rules
@@ -192,7 +174,7 @@ jobs:
               -o "thesis-custom-rules/${rule}.yaml"
           done
           echo "## ⚡ Flask Custom Rules" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Downloaded 7 Flask-specific custom Semgrep rules from thesis repository" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Downloaded 7 Flask-specific custom Semgrep rules" >> $GITHUB_STEP_SUMMARY
 
       - name: Build Semgrep config string
         id: semgrep-config
@@ -208,7 +190,6 @@ jobs:
           echo "config=$CONFIG" >> $GITHUB_OUTPUT
 
       - name: Run Semgrep
-        # Pinned to v1.162.0 — version used during thesis evaluation
         run: |
           pip install semgrep==1.162.0
 
@@ -220,7 +201,6 @@ jobs:
           set -e
 
           echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
-          echo "Config: ${{ steps.semgrep-config.outputs.config }}" >> $GITHUB_STEP_SUMMARY
 
           FINDINGS=$(python3 -c "
           import json
@@ -265,9 +245,6 @@ jobs:
             semgrep-report.json
             semgrep.sarif
 
-  # ================================================================
-  # JOB 4 — SCA + Image Scan
-  # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
     runs-on: ubuntu-latest
@@ -312,7 +289,6 @@ jobs:
         run: |
           echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
           echo "Severity threshold: ${{ inputs.trivy-severity }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
 
           CRITICAL=$(python3 -c "
           import json
@@ -338,10 +314,8 @@ jobs:
           TOTAL=$((CRITICAL + HIGH))
           if [ $TOTAL -gt 0 ]; then
             echo "❌ **$TOTAL finding(s) detected**" >> $GITHUB_STEP_SUMMARY
-            if [ "${{ inputs.fail-on-findings }}" = "true" ]; then
-              echo "Pipeline blocked." >> $GITHUB_STEP_SUMMARY
-            else
-              echo "⚠️ Running in audit-only mode — pipeline not blocked." >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.fail-on-findings }}" != "true" ]; then
+              echo "⚠️ Audit-only mode — pipeline not blocked." >> $GITHUB_STEP_SUMMARY
             fi
           else
             echo "✅ No findings at ${{ inputs.trivy-severity }} threshold" >> $GITHUB_STEP_SUMMARY
@@ -361,12 +335,88 @@ jobs:
             trivy-fs.sarif
 
   # ================================================================
-  # JOB 5 — Generate Security Dashboard
+  # JOB 5 — DAST (optional)
+  # ================================================================
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: sca-and-image
+    if: ${{ inputs.enable-dast }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install application dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            echo "No requirements.txt found — skipping dependency install"
+          fi
+
+      - name: Start application for DAST scanning
+        run: |
+          nohup ${{ inputs.app-start-command }} > app.log 2>&1 &
+          echo "Waiting 15 seconds for application to start on port ${{ inputs.app-port }}..."
+          sleep 15
+          echo "Application startup log:"
+          cat app.log || true
+          curl -s -o /dev/null -w "HTTP status: %{http_code}\n" \
+            http://localhost:${{ inputs.app-port }}/ || true
+
+      - name: Run OWASP ZAP baseline scan via Docker
+        run: |
+          mkdir -p zap-output
+          chmod 777 zap-output
+
+          docker run --rm \
+            --network host \
+            -v "$(pwd)/zap-output:/zap/wrk/:rw" \
+            -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:${{ inputs.app-port }} \
+            -J zap-report.json \
+            -r zap-report.html \
+            -I || true
+
+          echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
+          if [ -f zap-output/zap-report.json ]; then
+            ALERTS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('zap-output/zap-report.json'))
+              sites = data.get('site', [])
+              total = sum(len(s.get('alerts', [])) for s in sites)
+              print(total)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+            echo "🔍 **$ALERTS alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ ZAP report not generated" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            zap-output/zap-report.json
+            zap-output/zap-report.html
+
+  # ================================================================
+  # JOB 6 — Generate Security Dashboard
   # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
-    needs: [secret-scanning, iac-scanning, sast, sca-and-image]
+    needs: [secret-scanning, iac-scanning, sast, sca-and-image, dast]
     if: always()
     environment:
       name: github-pages
@@ -407,16 +457,14 @@ jobs:
         continue-on-error: true
         uses: actions/deploy-pages@v4
 
-      - name: Write dashboard summary
+      - name: Show dashboard link
         if: always()
         run: |
-          PAGES_URL="${{ steps.deployment.outputs.page_url }}"
-          if [ -z "$PAGES_URL" ]; then
-            PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
-          fi
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          PAGES_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/"
           echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Security findings dashboard published at:" >> $GITHUB_STEP_SUMMARY
-          echo "**$PAGES_URL**" >> $GITHUB_STEP_SUMMARY
+          echo "📊 **[View Security Dashboard](${PAGES_URL})**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Also available as artifact: \`generic-security-dashboard\`" >> $GITHUB_STEP_SUMMARY
+          echo "> If the link is not yet live, download the \`generic-security-dashboard\` artifact above." >> $GITHUB_STEP_SUMMARY
