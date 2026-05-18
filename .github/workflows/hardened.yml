@@ -1,4 +1,4 @@
-name: Hardened Pipeline (SAST + SCA + Secret Scanning)
+name: Hardened Pipeline (SAST + SCA + Secret Scanning + DAST)
 
 on:
   push:
@@ -19,6 +19,9 @@ permissions:
   id-token: write
 
 jobs:
+  # ================================================================
+  # JOB 1 — Secret Scanning
+  # ================================================================
   secret-scanning:
     name: Secret Scanning (Gitleaks)
     runs-on: ubuntu-latest
@@ -52,6 +55,9 @@ jobs:
           name: gitleaks-report
           path: gitleaks-report.json
 
+  # ================================================================
+  # JOB 2 — IaC Security Scan
+  # ================================================================
   iac-scanning:
     name: IaC Security Scan (tfsec)
     runs-on: ubuntu-latest
@@ -119,21 +125,6 @@ jobs:
           if [ $TOTAL -gt 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "❌ **$TOTAL CRITICAL/HIGH IaC misconfiguration(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Rule | Resource | Severity | Description |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|----------|----------|-------------|" >> $GITHUB_STEP_SUMMARY
-            python3 -c "
-          import json
-          data = json.load(open('tfsec-report.json'))
-          results = data.get('results') or []
-          for r in results:
-              if r.get('severity') in ['CRITICAL', 'HIGH']:
-                  rule = r.get('rule_id','')
-                  resource = r.get('location',{}).get('filename','').replace('terraform/','')
-                  sev = r.get('severity','')
-                  desc = (r.get('description') or '')[:60]
-                  print(f'| {rule} | \`{resource}\` | {sev} | {desc} |')
-          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           else
             echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
           fi
@@ -145,6 +136,9 @@ jobs:
           name: tfsec-report
           path: tfsec-report.json
 
+  # ================================================================
+  # JOB 3 — SAST
+  # ================================================================
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
@@ -156,7 +150,6 @@ jobs:
 
       - name: Run Semgrep with default and custom rules
         # Pinned to v1.162.0 — version used during thesis evaluation
-        # Semgrep version pinned because rule changes directly affect detection results
         run: |
           pip install semgrep==1.162.0
 
@@ -203,6 +196,9 @@ jobs:
             semgrep-report.json
             semgrep.sarif
 
+  # ================================================================
+  # JOB 4 — SCA + Image Scan
+  # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
     runs-on: ubuntu-latest
@@ -271,8 +267,6 @@ jobs:
           category: trivy-image
 
       - name: Generate CycloneDX SBOM
-        # Software Bill of Materials — lists all components, versions and licences.
-        # Required under EU Cyber Resilience Act and NIS2 §30 supply chain provisions.
         # CycloneDX format chosen for broad tooling support and OWASP standardisation.
         uses: aquasecurity/trivy-action@master
         with:
@@ -335,10 +329,104 @@ jobs:
             trivy-image.sarif
             sbom.cdx.json
 
+  # ================================================================
+  # JOB 5 — DAST (OWASP ZAP)
+  # ================================================================
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: sca-and-image
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install Flask application dependencies
+        run: pip install -r requirements.txt
+
+      - name: Start Flask application for dynamic scanning
+        # Starts flask-webgoat directly on the runner at port 5000.
+        # debug=True is already set in run.py (ground truth item V10).
+        # The application intentionally contains vulnerabilities for
+        # DAST evaluation — this is the purpose of the thesis target.
+        run: |
+          nohup python run.py > flask.log 2>&1 &
+          echo "Waiting 15 seconds for Flask to start..."
+          sleep 15
+          echo "Flask startup log:"
+          cat flask.log || true
+          echo "Probing Flask application..."
+          curl -s -o /dev/null -w "HTTP status: %{http_code}\n" \
+            http://localhost:5000/login || true
+
+      - name: Get Docker bridge IP for ZAP container access
+        # ZAP runs inside its own Docker container and cannot reach
+        # localhost of the runner host directly. The Docker bridge
+        # interface IP is used instead, which is reachable from
+        # within the ZAP container.
+        run: |
+          BRIDGE_IP=$(ip addr show docker0 \
+            | grep -oP '(?<=inet )\d+\.\d+\.\d+\.\d+')
+          if [ -z "$BRIDGE_IP" ]; then
+            BRIDGE_IP=$(ip route | grep default | awk '{print $3}')
+          fi
+          echo "BRIDGE_IP=$BRIDGE_IP" >> $GITHUB_ENV
+          echo "ZAP target URL: http://$BRIDGE_IP:5000"
+
+      - name: Run OWASP ZAP Baseline Scan
+        # Baseline scan mode: probes for common vulnerabilities
+        # without aggressive active attacks. Suitable for CI/CD
+        # integration. fail_action: false ensures findings are
+        # reported without blocking the pipeline during evaluation.
+        uses: zaproxy/action-baseline-scan@v0.12.0
+        with:
+          target: 'http://${{ env.BRIDGE_IP }}:5000'
+          fail_action: false
+          cmd_options: '-a -j'
+        continue-on-error: true
+
+      - name: Write ZAP step summary
+        if: always()
+        run: |
+          echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
+          echo "Target: http://${{ env.BRIDGE_IP }}:5000" >> $GITHUB_STEP_SUMMARY
+          if [ -f report_json.json ]; then
+            ALERTS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('report_json.json'))
+              sites = data.get('site', [])
+              total = sum(len(s.get('alerts', [])) for s in sites)
+              print(total)
+          except Exception as e:
+              print(0)" 2>/dev/null || echo "0")
+            echo "🔍 **$ALERTS alert(s) detected**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ ZAP report not found — check ZAP execution log" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            report_json.json
+            report_html.html
+            report_md.md
+
+  # ================================================================
+  # JOB 6 — Generate Security Dashboard
+  # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
-    needs: [secret-scanning, iac-scanning, sast, sca-and-image]
+    needs: [secret-scanning, iac-scanning, sast, sca-and-image, dast]
     if: always()
     environment:
       name: github-pages
