@@ -341,7 +341,7 @@ jobs:
     name: DAST (OWASP ZAP)
     runs-on: ubuntu-latest
     needs: sca-and-image
-    if: ${{ inputs.enable-dast }}
+    if: ${{ always() && inputs.enable-dast }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
