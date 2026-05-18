@@ -383,7 +383,7 @@ jobs:
         # without aggressive active attacks. Suitable for CI/CD
         # integration. fail_action: false ensures findings are
         # reported without blocking the pipeline during evaluation.
-        uses: zaproxy/action-baseline-scan@v0.12.0
+        uses: zaproxy/action-baseline-scan@v0.10.0
         with:
           target: 'http://${{ env.BRIDGE_IP }}:5000'
           fail_action: false
