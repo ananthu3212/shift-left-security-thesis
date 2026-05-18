@@ -19,9 +19,7 @@ permissions:
   id-token: write
 
 jobs:
-  # ================================================================
-  # JOB 1 — Secret Scanning
-  # ================================================================
+
   secret-scanning:
     name: Secret Scanning (Gitleaks)
     runs-on: ubuntu-latest
@@ -32,7 +30,6 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        # Pinned to v8.18.4 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
           ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
@@ -55,9 +52,6 @@ jobs:
           name: gitleaks-report
           path: gitleaks-report.json
 
-  # ================================================================
-  # JOB 2 — IaC Security Scan
-  # ================================================================
   iac-scanning:
     name: IaC Security Scan (tfsec)
     runs-on: ubuntu-latest
@@ -66,7 +60,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run tfsec on Terraform infrastructure
-        # Pinned to v1.28.11 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
           chmod +x tfsec
@@ -96,34 +89,13 @@ jobs:
           except:
               print(0)" 2>/dev/null || echo "0")
 
-          MEDIUM=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('tfsec-report.json'))
-              results = data.get('results') or []
-              print(sum(1 for r in results if r.get('severity') == 'MEDIUM'))
-          except:
-              print(0)" 2>/dev/null || echo "0")
-
-          LOW=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('tfsec-report.json'))
-              results = data.get('results') or []
-              print(sum(1 for r in results if r.get('severity') == 'LOW'))
-          except:
-              print(0)" 2>/dev/null || echo "0")
-
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟡 MEDIUM   | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔵 LOW      | $LOW |" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=$((CRITICAL + HIGH))
           if [ $TOTAL -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
             echo "❌ **$TOTAL CRITICAL/HIGH IaC misconfiguration(s) detected**" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
@@ -136,9 +108,6 @@ jobs:
           name: tfsec-report
           path: tfsec-report.json
 
-  # ================================================================
-  # JOB 3 — SAST
-  # ================================================================
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
@@ -149,7 +118,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Semgrep with default and custom rules
-        # Pinned to v1.162.0 — version used during thesis evaluation
         run: |
           pip install semgrep==1.162.0
 
@@ -164,18 +132,6 @@ jobs:
             echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **$FINDINGS finding(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
-            python3 -c "
-          import json
-          data = json.load(open('semgrep-report.json'))
-          for r in data.get('results', []):
-              rule = r['check_id'].split('.')[-1]
-              path = r['path']
-              line = r['start']['line']
-              print(f'| {rule} | \`{path}\` | {line} |')
-          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           fi
 
           exit $SEMGREP_EXIT
@@ -196,9 +152,6 @@ jobs:
             semgrep-report.json
             semgrep.sarif
 
-  # ================================================================
-  # JOB 4 — SCA + Image Scan
-  # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
     runs-on: ubuntu-latest
@@ -211,9 +164,6 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
-      # Trivy uses latest CVE database on each run — intentional design decision.
-      # SCA results are inherently database-dependent and cannot be fully pinned.
-      # This is documented as a threat to validity in the thesis evaluation chapter.
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -267,7 +217,6 @@ jobs:
           category: trivy-image
 
       - name: Generate CycloneDX SBOM
-        # CycloneDX format chosen for broad tooling support and OWASP standardisation.
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -300,17 +249,14 @@ jobs:
           vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
           print(len(vulns))" 2>/dev/null || echo "0")
 
-          echo "### Filesystem (Dependencies)" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📋 **SBOM generated:** CycloneDX format — available as artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **SBOM generated:** CycloneDX — artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=$((FS_CRITICAL + FS_HIGH))
           if [ $TOTAL -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
             echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
             exit 1
           else
@@ -329,82 +275,73 @@ jobs:
             trivy-image.sarif
             sbom.cdx.json
 
-    # ================================================================
-    # JOB 5 — DAST (OWASP ZAP)
-    # ================================================================
-    dast:
-      name: DAST (OWASP ZAP)
-      runs-on: ubuntu-latest
-      needs: sca-and-image
-      if: always()
-      steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
+  dast:
+    name: DAST (OWASP ZAP)
+    runs-on: ubuntu-latest
+    needs: sca-and-image
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-        - name: Set up Python
-          uses: actions/setup-python@v5
-          with:
-            python-version: '3.9'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
 
-        - name: Install Flask application dependencies
-          run: pip install -r requirements.txt
+      - name: Install Flask application dependencies
+        run: pip install -r requirements.txt
 
-        - name: Start Flask application for dynamic scanning
-          run: |
-            nohup python run.py > flask.log 2>&1 &
-            echo "Waiting 15 seconds for Flask to start..."
-            sleep 15
-            echo "Flask startup log:"
-            cat flask.log || true
-            curl -s -o /dev/null -w "Flask HTTP status: %{http_code}\n" \
-              http://localhost:5000/login || true
+      - name: Start Flask application for dynamic scanning
+        run: |
+          nohup python run.py > flask.log 2>&1 &
+          echo "Waiting 15 seconds for Flask to start..."
+          sleep 15
+          echo "Flask startup log:"
+          cat flask.log || true
+          curl -s -o /dev/null -w "Flask HTTP status: %{http_code}\n" \
+            http://localhost:5000/login || true
 
-        - name: Run OWASP ZAP baseline scan via Docker
-          # Runs ZAP using the official Docker image with host networking
-          # so ZAP can reach the Flask app running on the runner's localhost.
-          # --network host: shares the runner's network stack with ZAP container.
-          # -I flag: do not fail on alerts — findings are reported, not blocking.
-          run: |
-            mkdir -p zap-output
-            
-            docker run --rm \
-              --network host \
-              -v "$(pwd)/zap-output:/zap/wrk/:rw" \
-              -t ghcr.io/zaproxy/zaproxy:stable \
-              zap-baseline.py \
-              -t http://localhost:5000 \
-              -J zap-report.json \
-              -r zap-report.html \
-              -I || true
-            
-            echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
-            if [ -f zap-output/zap-report.json ]; then
-              ALERTS=$(python3 -c "
-            import json
-            try:
-                data = json.load(open('zap-output/zap-report.json'))
-                sites = data.get('site', [])
-                total = sum(len(s.get('alerts', [])) for s in sites)
-                print(total)
-            except:
-                print(0)
-            " 2>/dev/null || echo "0")
-              echo "🔍 **$ALERTS alert type(s) detected**" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "⚠️ ZAP report not generated — check Docker log above" >> $GITHUB_STEP_SUMMARY
-            fi
+      - name: Run OWASP ZAP baseline scan via Docker
+        run: |
+          mkdir -p zap-output
 
-        - name: Upload ZAP reports
-          if: always()
-          uses: actions/upload-artifact@v4
-          with:
-            name: zap-report
-            path: |
-              zap-output/zap-report.json
-              zap-output/zap-report.html
-  # ================================================================
-  # JOB 6 — Generate Security Dashboard
-  # ================================================================
+          docker run --rm \
+            --network host \
+            -v "$(pwd)/zap-output:/zap/wrk/:rw" \
+            -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:5000 \
+            -J zap-report.json \
+            -r zap-report.html \
+            -I || true
+
+          echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
+          if [ -f zap-output/zap-report.json ]; then
+            ALERTS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('zap-output/zap-report.json'))
+              sites = data.get('site', [])
+              total = sum(len(s.get('alerts', [])) for s in sites)
+              print(total)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+            echo "🔍 **$ALERTS alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ ZAP report not generated — check Docker log above" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            zap-output/zap-report.json
+            zap-output/zap-report.html
+
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
@@ -431,10 +368,7 @@ jobs:
       - name: Write dashboard link to summary
         run: |
           echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "Thesis evaluation dashboard published at:" >> $GITHUB_STEP_SUMMARY
           echo "**https://ananthu3212.github.io/shift-left-security-thesis/**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Generic findings dashboard available as artifact: \`generic-security-dashboard\`" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload generic dashboard as artifact
         if: always()
