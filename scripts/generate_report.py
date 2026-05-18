@@ -2,10 +2,10 @@
 """
 generate_report.py — Shift-Left Security Thesis Dashboard Generator
 
-Parses Gitleaks, Semgrep, Trivy and tfsec JSON reports, evaluates findings
-against the defined ground truth (14 application items + 8 IaC items),
-computes Precision/Recall/F1 per tool, and generates a single-file
-static HTML dashboard for GitHub Pages.
+Parses Gitleaks, Semgrep, Trivy, tfsec and OWASP ZAP JSON reports,
+evaluates findings against the defined ground truth (14 application
+items + 8 IaC items), computes Precision/Recall/F1 per tool, and
+generates a single-file static HTML dashboard for GitHub Pages.
 
 Thesis: Shift-Left Security in CI/CD Pipelines
 Student: Ananthu Chandra Babu
@@ -288,6 +288,29 @@ def get_trivy_app_cves(trivy_data):
     return cves
 
 
+def get_zap_findings(zap_data):
+    """Parse OWASP ZAP JSON report and return list of alerts sorted by risk."""
+    alerts = []
+    if not zap_data:
+        return alerts
+    risk_map = {"3": "HIGH", "2": "MEDIUM", "1": "LOW", "0": "INFORMATIONAL"}
+    for site in zap_data.get("site", []):
+        for alert in site.get("alerts", []):
+            risk_code = str(alert.get("riskcode", "0"))
+            alerts.append({
+                "name": alert.get("name", alert.get("alert", "")),
+                "risk": risk_map.get(risk_code, "INFORMATIONAL"),
+                "risk_code": int(risk_code),
+                "count": int(alert.get("count", "1")),
+                "cwe": alert.get("cweid", "—"),
+                "plugin_id": alert.get("pluginid", ""),
+                "desc": (alert.get("desc", "") or "")[:300],
+                "solution": (alert.get("solution", "") or "")[:200],
+            })
+    alerts.sort(key=lambda x: x["risk_code"], reverse=True)
+    return alerts
+
+
 def load_runtime_data():
     """Load n=10 runtime statistics from data/runtime.json."""
     paths = [
@@ -302,8 +325,8 @@ def load_runtime_data():
 
 
 def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
-                  semgrep_data, gitleaks_data, commit_sha, run_number,
-                  runtime_data):
+                  semgrep_data, gitleaks_data, zap_findings,
+                  commit_sha, run_number, runtime_data):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     total_gt = len(GROUND_TRUTH)
     total_detected = metrics["combined"]["tp"]
@@ -332,6 +355,35 @@ def generate_html(gt_results, metrics, trivy_app_cves, iac_results,
 
     custom_tp = metrics["custom_only_tp"]
     default_tp = total_detected - custom_tp
+
+    # ZAP summary counts
+    zap_total   = len(zap_findings)
+    zap_high    = sum(1 for a in zap_findings if a["risk"] == "HIGH")
+    zap_medium  = sum(1 for a in zap_findings if a["risk"] == "MEDIUM")
+    zap_low     = sum(1 for a in zap_findings if a["risk"] == "LOW")
+    zap_info    = sum(1 for a in zap_findings if a["risk"] == "INFORMATIONAL")
+    zap_present = zap_total > 0
+
+    # ZAP alert rows
+    zap_rows = ""
+    if zap_findings:
+        for a in zap_findings:
+            risk_color = (
+                "danger"   if a["risk"] == "HIGH"          else
+                "warning"  if a["risk"] == "MEDIUM"        else
+                "info"     if a["risk"] == "LOW"           else
+                "secondary"
+            )
+            zap_rows += f"""
+        <tr>
+            <td><span class="badge bg-{risk_color}">{a["risk"]}</span></td>
+            <td>{a["name"]}</td>
+            <td><span class="badge bg-dark">CWE-{a["cwe"]}</span></td>
+            <td>{a["count"]}</td>
+            <td><small class="text-muted">{a["solution"][:150]}</small></td>
+        </tr>"""
+    else:
+        zap_rows = '<tr><td colspan="5" class="text-center text-muted">No ZAP report available — DAST not yet executed</td></tr>'
 
     # Runtime chart data
     runtime_chart_js = ""
@@ -656,7 +708,7 @@ new Chart(document.getElementById('runtimeBarChart'), {{
     </div>
   </div>
 
-  <div class="row g-3 mb-4">
+  <div class="row g-3 mb-3">
     <div class="col-md-3">
       <div class="metric-card">
         <div class="metric-value" style="color:#f85149">{metrics["semgrep"]["tp"] + metrics["semgrep"]["fp"]}</div>
@@ -693,6 +745,32 @@ new Chart(document.getElementById('runtimeBarChart'), {{
         <div class="metric-value" style="color:#3fb950">{custom_tp}</div>
         <div class="metric-label">⚡ Custom Rule Detections</div>
         <div class="mt-2"><small class="text-muted">additions beyond default ruleset</small></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#a371f7">{zap_total}</div>
+        <div class="metric-label">🔒 DAST Alerts (ZAP 2.17.0)</div>
+        <div class="mt-2">
+          <small class="text-danger">{zap_high} High</small> &nbsp;
+          <small class="text-warning">{zap_medium} Medium</small> &nbsp;
+          <small class="text-info">{zap_low} Low</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-9">
+      <div class="metric-card" style="text-align:left;">
+        <small class="text-muted">
+          <strong style="color:#a371f7">DAST vs SAST key insight:</strong>
+          ZAP dynamically confirmed V08 (CORS wildcard — <code>Access-Control-Allow-Origin: *</code>)
+          and V09 (CSP unsafe-inline) at runtime via HTTP response header inspection.
+          SQL injection (V01, V02), RCE (V03), deserialization (V04), and secret scanning (V11)
+          require source-level or credential analysis and are only detectable by static tools.
+          SAST and DAST are complementary — neither alone achieves full coverage.
+        </small>
       </div>
     </div>
   </div>
@@ -770,6 +848,53 @@ new Chart(document.getElementById('runtimeBarChart'), {{
         <th>CWE</th><th>OWASP</th><th>Tool</th><th>Detection</th>
       </tr></thead>
       <tbody>{gt_rows}</tbody>
+    </table>
+  </div>
+
+  <h5 class="section-title">🔒 DAST Results — OWASP ZAP 2.17.0 (Baseline Scan)</h5>
+  <p class="text-muted small mb-3">
+    OWASP ZAP performed a baseline scan against the running flask-webgoat application
+    at <code>http://localhost:5000</code> using the Automation Framework.
+    The baseline scan mode performs passive analysis and selected active probes
+    without aggressive fuzzing. ZAP dynamically confirmed CORS misconfiguration (V08)
+    and CSP unsafe-inline (V09) via HTTP response header inspection — both of which
+    were also detected statically by Semgrep custom rules. SQL injection (V01, V02),
+    RCE (V03), and insecure deserialization (V04) are not detectable by passive DAST
+    and require source-level static analysis. This confirms the complementary nature
+    of SAST and DAST as defence-in-depth layers.
+  </p>
+  <div class="row g-3 mb-3">
+    <div class="col-md-3">
+      <div class="iac-card">
+        <div class="metric-value" style="color:#f85149">{zap_high}</div>
+        <div class="metric-label">🔴 High Risk</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="iac-card">
+        <div class="metric-value" style="color:#e3b341">{zap_medium}</div>
+        <div class="metric-label">🟡 Medium Risk</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="iac-card">
+        <div class="metric-value" style="color:#388bfd">{zap_low}</div>
+        <div class="metric-label">🔵 Low Risk</div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="iac-card">
+        <div class="metric-value" style="color:#8b949e">{zap_info}</div>
+        <div class="metric-label">ℹ️ Informational</div>
+      </div>
+    </div>
+  </div>
+  <div class="table-responsive mb-4">
+    <table class="table table-bordered">
+      <thead><tr>
+        <th>Risk</th><th>Alert</th><th>CWE</th><th>Instances</th><th>Solution</th>
+      </tr></thead>
+      <tbody>{zap_rows}</tbody>
     </table>
   </div>
 
@@ -911,12 +1036,14 @@ def main():
     semgrep_path  = base / "semgrep-report" / "semgrep-report.json"
     gitleaks_path = base / "gitleaks-report" / "gitleaks-report.json"
     trivy_fs_path = base / "trivy-reports" / "trivy-fs-report.json"
-    tfsec_path    = base / "tfsec-report" / "tfsec-report.json"
+    tfsec_path    = base / "tfsec-report"   / "tfsec-report.json"
+    zap_path      = base / "zap-report"     / "zap-report.json"
 
     semgrep_data  = load_json(semgrep_path)  or {"results": []}
     gitleaks_data = load_json(gitleaks_path) or []
     trivy_data    = load_json(trivy_fs_path) or {"Results": []}
     tfsec_data    = load_json(tfsec_path)    or {"results": []}
+    zap_data      = load_json(zap_path)      or {}
 
     commit_sha = os.environ.get("GITHUB_SHA", "local")
     run_number = os.environ.get("GITHUB_RUN_NUMBER", "0")
@@ -925,12 +1052,13 @@ def main():
     iac_results    = evaluate_iac(tfsec_data)
     metrics        = compute_metrics(gt_results, semgrep_data)
     trivy_app_cves = get_trivy_app_cves(trivy_data)
+    zap_findings   = get_zap_findings(zap_data)
     runtime_data   = load_runtime_data()
 
     html = generate_html(
         gt_results, metrics, trivy_app_cves, iac_results,
-        semgrep_data, gitleaks_data, commit_sha, run_number,
-        runtime_data
+        semgrep_data, gitleaks_data, zap_findings,
+        commit_sha, run_number, runtime_data
     )
 
     out_dir = Path("dashboard")
@@ -941,6 +1069,7 @@ def main():
     print(f"Dashboard generated: {out_file}")
     print(f"Application ground truth: {metrics['combined']['tp']}/{len(GROUND_TRUTH)}")
     print(f"IaC findings classified: {len(iac_results)}")
+    print(f"ZAP alerts loaded: {len(zap_findings)}")
     print(f"Runtime data loaded: {'yes' if runtime_data else 'no'}")
     print(f"Combined Precision: {metrics['combined']['precision']:.3f}")
     print(f"Combined Recall:    {metrics['combined']['recall']:.3f}")
