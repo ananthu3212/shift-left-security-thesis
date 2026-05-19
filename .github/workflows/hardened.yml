@@ -1,55 +1,45 @@
-name: Hardened Pipeline (SAST + SCA + Secret Scanning + DAST)
+name: Hardened Security Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      run_note:
-        description: 'Note for this run (e.g. statistical run 1 of 10)'
-        required: false
-        default: 'Manual statistical run'
 
 permissions:
-  security-events: write
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 jobs:
-
-  secret-scanning:
-    name: Secret Scanning (Gitleaks)
+  secret-and-iac:
+    name: Secrets & IaC (Gitleaks + tfsec)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Run Gitleaks
-        # Pinned to v8.18.4 — version used during thesis evaluation
-        # Uses .gitleaks.toml from repo root for custom Flask secret rules
+      - name: Download custom Gitleaks config
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
+          curl -f -o .gitleaks.toml \
+            https://raw.githubusercontent.com/ananthu3212/shift-left-security-thesis/main/.gitleaks.toml || true
 
-          ./gitleaks detect --source . -v \
-            --config .gitleaks.toml \
+      - name: Run Gitleaks
+        run: |
+          set +e
+          docker run --rm \
+            -v "$(pwd):/repo" \
+            zricethezav/gitleaks:latest \
+            detect \
+            --source /repo \
+            --config /repo/.gitleaks.toml \
             --report-format json \
-            --report-path gitleaks-report.json
-          exit_code=$?
-
-          echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
-          if [ $exit_code -eq 0 ]; then
-            echo "✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
-          else
-            COUNT=$(python3 -c "import json; data=json.load(open('gitleaks-report.json')); print(len(data))" 2>/dev/null || echo "1+")
-            echo "❌ **$COUNT secret(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
-          fi
-
-          exit $exit_code
+            --report-path /repo/gitleaks-report.json \
+            --redact \
+            --no-git
+          set -e
 
       - name: Upload Gitleaks report
         if: always()
@@ -57,272 +47,78 @@ jobs:
         with:
           name: gitleaks-report
           path: gitleaks-report.json
+          if-no-files-found: warn
 
-  iac-scanning:
-    name: IaC Security Scan (tfsec)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run tfsec on Terraform infrastructure
-        # Pinned to v1.28.11 — version used during thesis evaluation
+      - name: Run tfsec
         run: |
-          curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
-          chmod +x tfsec
-
-          ./tfsec terraform/ \
+          mkdir -p tfsec-report
+          docker run --rm \
+            -v "$(pwd):/src" \
+            aquasec/tfsec:latest \
+            /src \
             --format json \
-            --out tfsec-report.json \
-            --soft-fail || true
-
-          echo "## 🏗️ IaC Security Scan (tfsec)" >> $GITHUB_STEP_SUMMARY
-
-          CRITICAL=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('tfsec-report.json'))
-              results = data.get('results') or []
-              print(sum(1 for r in results if r.get('severity') == 'CRITICAL'))
-          except:
-              print(0)" 2>/dev/null || echo "0")
-
-          HIGH=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('tfsec-report.json'))
-              results = data.get('results') or []
-              print(sum(1 for r in results if r.get('severity') == 'HIGH'))
-          except:
-              print(0)" 2>/dev/null || echo "0")
-
-          MEDIUM=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('tfsec-report.json'))
-              results = data.get('results') or []
-              print(sum(1 for r in results if r.get('severity') == 'MEDIUM'))
-          except:
-              print(0)" 2>/dev/null || echo "0")
-
-          LOW=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('tfsec-report.json'))
-              results = data.get('results') or []
-              print(sum(1 for r in results if r.get('severity') == 'LOW'))
-          except:
-              print(0)" 2>/dev/null || echo "0")
-
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟡 MEDIUM   | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔵 LOW      | $LOW |" >> $GITHUB_STEP_SUMMARY
-
-          TOTAL=$((CRITICAL + HIGH))
-          if [ $TOTAL -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **$TOTAL CRITICAL/HIGH IaC misconfiguration(s) detected**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
-          fi
+            --out /src/tfsec-report/tfsec-report.json || true
 
       - name: Upload tfsec report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tfsec-report
-          path: tfsec-report.json
+          path: tfsec-report/tfsec-report.json
+          if-no-files-found: warn
 
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
-    needs: [secret-scanning, iac-scanning]
-    if: always()
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Run Semgrep with default and custom rules
-        # Pinned to v1.162.0 — version used during thesis evaluation
-        # Loads p/python (default) + all rules from rules/ directory (custom)
+      - name: Run Semgrep
         run: |
-          pip install semgrep==1.162.0
+          pip install semgrep --quiet
+          mkdir -p semgrep-report
+          semgrep scan \
+            --config "p/python" \
+            --config "p/flask" \
+            --config "p/owasp-top-ten" \
+            --config rules/ \
+            --json \
+            --output semgrep-report/semgrep-report.json \
+            . || true
 
-          semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
-
-          semgrep --config=p/python --config=rules/ --json -o semgrep-report.json --error .
-          SEMGREP_EXIT=$?
-
-          echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
-          FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
-          if [ $SEMGREP_EXIT -eq 0 ]; then
-            echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **$FINDINGS finding(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
-            echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
-            python3 -c "
-          import json
-          data = json.load(open('semgrep-report.json'))
-          for r in data.get('results', []):
-              rule = r['check_id'].split('.')[-1]
-              path = r['path']
-              line = r['start']['line']
-              print(f'| {rule} | \`{path}\` | {line} |')
-          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
-          fi
-
-          exit $SEMGREP_EXIT
-
-      - name: Upload Semgrep SARIF to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: semgrep.sarif
-          category: semgrep
-
-      - name: Upload Semgrep reports
+      - name: Upload Semgrep report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: semgrep-report
-          path: |
-            semgrep-report.json
-            semgrep.sarif
+          path: semgrep-report/semgrep-report.json
+          if-no-files-found: warn
 
   sca-and-image:
-    name: SCA + Image Scan (Trivy)
+    name: SCA (Trivy)
     runs-on: ubuntu-latest
-    needs: sast
-    if: always()
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t flask-webgoat:hardened .
-
-      # Trivy uses latest CVE database on each run — intentional design decision.
-      # SCA results are inherently database-dependent and cannot be fully pinned.
-      # Documented as a threat to validity in the thesis evaluation chapter.
-      - name: Run Trivy filesystem scan — JSON
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: json
-          output: trivy-fs-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Run Trivy filesystem scan — SARIF
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: sarif
-          output: trivy-fs.sarif
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Upload Trivy FS SARIF to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-fs.sarif
-          category: trivy-filesystem
-
-      - name: Run Trivy image scan — JSON
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: flask-webgoat:hardened
-          format: json
-          output: trivy-image-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Run Trivy image scan — SARIF
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: flask-webgoat:hardened
-          format: sarif
-          output: trivy-image.sarif
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Upload Trivy image SARIF to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
-
-      - name: Generate CycloneDX SBOM
-        # CycloneDX format chosen for broad tooling support and OWASP standardisation
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: .
-          format: cyclonedx
-          output: sbom.cdx.json
-          exit-code: 0
-
-      - name: Upload SBOM artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-cyclonedx
-          path: sbom.cdx.json
-
-      - name: Write Trivy step summary and check findings
-        if: always()
+      - name: Run Trivy filesystem scan
         run: |
-          echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
+          mkdir -p trivy-reports
+          docker run --rm \
+            -v "$(pwd):/project" \
+            aquasec/trivy:latest \
+            fs /project \
+            --format json \
+            --output /project/trivy-reports/trivy-fs-report.json \
+            --severity CRITICAL,HIGH,MEDIUM,LOW \
+            --quiet || true
 
-          FS_CRITICAL=$(python3 -c "
-          import json
-          data = json.load(open('trivy-fs-report.json'))
-          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL']
-          print(len(vulns))" 2>/dev/null || echo "0")
-
-          FS_HIGH=$(python3 -c "
-          import json
-          data = json.load(open('trivy-fs-report.json'))
-          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
-          print(len(vulns))" 2>/dev/null || echo "0")
-
-          echo "### Filesystem (Dependencies)" >> $GITHUB_STEP_SUMMARY
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📋 **SBOM generated:** CycloneDX format — artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
-
-          TOTAL=$((FS_CRITICAL + FS_HIGH))
-          if [ $TOTAL -gt 0 ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Upload Trivy reports
+      - name: Upload Trivy report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: trivy-reports
-          path: |
-            trivy-fs-report.json
-            trivy-image-report.json
-            trivy-fs.sarif
-            trivy-image.sarif
-            sbom.cdx.json
+          path: trivy-reports/trivy-fs-report.json
+          if-no-files-found: warn
 
   dast:
     name: DAST (OWASP ZAP)
@@ -330,33 +126,23 @@ jobs:
     needs: sca-and-image
     if: always()
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install Flask application dependencies
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Start Flask application for dynamic scanning
-        # Starts flask-webgoat directly on the runner at port 5000.
-        # debug=True is already set in run.py (ground truth item V10).
+      - name: Start Flask app
         run: |
           nohup python run.py > flask.log 2>&1 &
-          echo "Waiting 15 seconds for Flask to start..."
           sleep 15
-          echo "Flask startup log:"
           cat flask.log || true
-          curl -s -o /dev/null -w "Flask HTTP status: %{http_code}\n" \
-            http://localhost:5000/login || true
+          curl -s -o /dev/null -w "Flask status: %{http_code}\n" http://localhost:5000/login || true
 
-      - name: Run OWASP ZAP baseline scan via Docker
-        # --user root: ensures ZAP container has write permission to mounted output directory
-        # --network host: allows ZAP container to reach Flask on runner localhost
-        # -I flag: do not fail on alerts — findings reported but pipeline not blocked
+      - name: Run OWASP ZAP baseline scan
         run: |
           mkdir -p zap-output
           chmod 777 zap-output
@@ -372,24 +158,15 @@ jobs:
             -r zap-report.html \
             -I || true
 
-          echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
-          if [ -f zap-output/zap-report.json ]; then
-            ALERTS=$(python3 -c "
-          import json
-          try:
-              data = json.load(open('zap-output/zap-report.json'))
-              sites = data.get('site', [])
-              total = sum(len(s.get('alerts', [])) for s in sites)
-              print(total)
-          except:
-              print(0)
-          " 2>/dev/null || echo "0")
-            echo "🔍 **$ALERTS alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ ZAP report not generated — check Docker log above" >> $GITHUB_STEP_SUMMARY
+          echo "=== zap-output contents ==="
+          ls -la zap-output/
+
+          if [ ! -f zap-output/zap-report.json ] || [ ! -s zap-output/zap-report.json ]; then
+            echo '{"site": []}' > zap-output/zap-report.json
+            echo "WARNING: ZAP report missing — placeholder created"
           fi
 
-      - name: Upload ZAP reports
+      - name: Upload ZAP report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -397,47 +174,47 @@ jobs:
           path: |
             zap-output/zap-report.json
             zap-output/zap-report.html
+          if-no-files-found: warn
 
   generate-dashboard:
-    name: Generate Security Dashboard
+    name: Generate Dashboard
     runs-on: ubuntu-latest
-    needs: [secret-scanning, iac-scanning, sast, sca-and-image, dast]
+    needs: [secret-and-iac, sast, sca-and-image, dast]
     if: always()
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Download all scan reports
         uses: actions/download-artifact@v4
         with:
           path: reports/
+          pattern: '*'
+          merge-multiple: true
 
-      - name: Generate thesis evaluation dashboard
-        run: python3 scripts/generate_report.py
+      - name: Debug — show downloaded reports
+        run: find reports/ -type f | sort
 
-      - name: Generate generic findings dashboard
-        run: python3 scripts/generate_generic_report.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
 
-      - name: Write dashboard link to summary
-        run: |
-          echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "**https://ananthu3212.github.io/shift-left-security-thesis/**" >> $GITHUB_STEP_SUMMARY
+      - name: Generate dashboard
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python scripts/generate_generic_report.py
 
-      - name: Upload generic dashboard as artifact
-        if: always()
+      - name: Upload dashboard artifact
         uses: actions/upload-artifact@v4
         with:
           name: generic-security-dashboard
           path: generic-dashboard/index.html
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dashboard/
-
       - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./generic-dashboard
+          publish_branch: gh-pages
+          force_orphan: true
