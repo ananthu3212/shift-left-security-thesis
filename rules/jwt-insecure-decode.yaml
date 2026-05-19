@@ -1,0 +1,20 @@
+rules:
+  - id: flask-jwt-insecure-decode
+    pattern-either:
+      - pattern: jwt.decode(..., verify=False, ...)
+      - pattern: jwt.decode(..., options={"verify_signature": False, ...}, ...)
+      - pattern: jwt.decode(..., algorithms=["none"], ...)
+      - pattern: jwt.decode(..., algorithms=["None"], ...)
+    message: >
+      Insecure JWT verification: signature verification is disabled via
+      verify=False or equivalent. An attacker can forge any JWT token and
+      completely bypass authentication. Always verify JWT signatures against
+      a strong secret key or public key, and enforce algorithm restrictions.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      cwe: CWE-347
+      owasp: A02:2021 - Cryptographic Failures
+      category: security
+      technology:
+        - flask

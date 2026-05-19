@@ -1,0 +1,29 @@
+# Custom Gitleaks configuration
+# Thesis: Shift-Left Security in CI/CD Pipelines
+# Extends default rules with Flask application-level secret detection
+# Addresses gap identified during portability evaluation:
+# default Gitleaks rules detect service credentials (AWS, GitHub tokens)
+# but miss hardcoded Flask application secrets and HMAC keys.
+
+title = "Shift-Left Security Thesis — Custom Gitleaks Config"
+
+[[rules]]
+id = "flask-hardcoded-secret-key"
+description = "Flask application secret key hardcoded in Python source code"
+regex = '''(?i)(app\.secret[_-]?key|secret[_-]?key)\s*=\s*['"][^'"]{4,}['"]'''
+tags = ["flask", "secret", "hardcoded-credentials"]
+severity = "HIGH"
+
+[[rules]]
+id = "flask-hardcoded-hmac-key"
+description = "Flask HMAC or JWT signing key hardcoded in Python source code"
+regex = '''(?i)(hmac[_-]?key|jwt[_-]?key|secret[_-]?hmac)\s*=\s*['"][^'"]{4,}['"]'''
+tags = ["flask", "secret", "hardcoded-credentials"]
+severity = "HIGH"
+
+[[rules]]
+id = "flask-hardcoded-config-secret"
+description = "Flask app.config secret key hardcoded in Python source code"
+regex = '''(?i)app\.config\[['"]secret[_a-z0-9]*['"]\]\s*=\s*['"][^'"]{4,}['"]'''
+tags = ["flask", "secret", "hardcoded-credentials"]
+severity = "HIGH"

@@ -30,9 +30,15 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
+        # Pinned to v8.18.4 — version used during thesis evaluation
+        # Uses .gitleaks.toml from repo root for custom Flask secret rules
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
-          ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
+
+          ./gitleaks detect --source . -v \
+            --config .gitleaks.toml \
+            --report-format json \
+            --report-path gitleaks-report.json
           exit_code=$?
 
           echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
@@ -60,6 +66,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run tfsec on Terraform infrastructure
+        # Pinned to v1.28.11 — version used during thesis evaluation
         run: |
           curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
           chmod +x tfsec
@@ -89,13 +96,34 @@ jobs:
           except:
               print(0)" 2>/dev/null || echo "0")
 
+          MEDIUM=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('tfsec-report.json'))
+              results = data.get('results') or []
+              print(sum(1 for r in results if r.get('severity') == 'MEDIUM'))
+          except:
+              print(0)" 2>/dev/null || echo "0")
+
+          LOW=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('tfsec-report.json'))
+              results = data.get('results') or []
+              print(sum(1 for r in results if r.get('severity') == 'LOW'))
+          except:
+              print(0)" 2>/dev/null || echo "0")
+
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 MEDIUM   | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 LOW      | $LOW |" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=$((CRITICAL + HIGH))
           if [ $TOTAL -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo "❌ **$TOTAL CRITICAL/HIGH IaC misconfiguration(s) detected**" >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
@@ -118,6 +146,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Semgrep with default and custom rules
+        # Pinned to v1.162.0 — version used during thesis evaluation
+        # Loads p/python (default) + all rules from rules/ directory (custom)
         run: |
           pip install semgrep==1.162.0
 
@@ -132,6 +162,18 @@ jobs:
             echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **$FINDINGS finding(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
+            python3 -c "
+          import json
+          data = json.load(open('semgrep-report.json'))
+          for r in data.get('results', []):
+              rule = r['check_id'].split('.')[-1]
+              path = r['path']
+              line = r['start']['line']
+              print(f'| {rule} | \`{path}\` | {line} |')
+          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           fi
 
           exit $SEMGREP_EXIT
@@ -164,6 +206,9 @@ jobs:
       - name: Build Docker image
         run: docker build -t flask-webgoat:hardened .
 
+      # Trivy uses latest CVE database on each run — intentional design decision.
+      # SCA results are inherently database-dependent and cannot be fully pinned.
+      # Documented as a threat to validity in the thesis evaluation chapter.
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -217,6 +262,7 @@ jobs:
           category: trivy-image
 
       - name: Generate CycloneDX SBOM
+        # CycloneDX format chosen for broad tooling support and OWASP standardisation
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -249,14 +295,17 @@ jobs:
           vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
           print(len(vulns))" 2>/dev/null || echo "0")
 
+          echo "### Filesystem (Dependencies)" >> $GITHUB_STEP_SUMMARY
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
-          echo "📋 **SBOM generated:** CycloneDX — artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **SBOM generated:** CycloneDX format — artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
 
           TOTAL=$((FS_CRITICAL + FS_HIGH))
           if [ $TOTAL -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
             exit 1
           else
@@ -293,6 +342,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Start Flask application for dynamic scanning
+        # Starts flask-webgoat directly on the runner at port 5000.
+        # debug=True is already set in run.py (ground truth item V10).
         run: |
           nohup python run.py > flask.log 2>&1 &
           echo "Waiting 15 seconds for Flask to start..."
@@ -303,16 +354,20 @@ jobs:
             http://localhost:5000/login || true
 
       - name: Run OWASP ZAP baseline scan via Docker
+        # --user root: ensures ZAP container has write permission to mounted output directory
+        # --network host: allows ZAP container to reach Flask on runner localhost
+        # -I flag: do not fail on alerts — findings reported but pipeline not blocked
         run: |
           mkdir -p zap-output
           chmod 777 zap-output
 
           docker run --rm \
+            --user root \
             --network host \
             -v "$(pwd)/zap-output:/zap/wrk/:rw" \
             -t ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-            -t http://localhost:5000/login \
+            -t http://localhost:5000 \
             -J zap-report.json \
             -r zap-report.html \
             -I || true
@@ -331,7 +386,7 @@ jobs:
           " 2>/dev/null || echo "0")
             echo "🔍 **$ALERTS alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
           else
-            echo "⚠️ ZAP report not generated" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ ZAP report not generated — check Docker log above" >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload ZAP reports
