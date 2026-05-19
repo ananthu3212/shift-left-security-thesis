@@ -1,21 +1,15 @@
 rules:
-  - id: flask-ssti-fstring-render
-    pattern-either:
-      - pattern: render_template_string("..." + ..., ...)
-      - pattern: render_template_string("..." % ..., ...)
-      - pattern: |
-          $T = "..." + ...
-          render_template_string($T, ...)
-      - pattern: |
-          $T = "..." % ...
-          render_template_string($T, ...)
+  - id: flask-ssti-dynamic-template
+    patterns:
+      - pattern: render_template_string($TEMPLATE, ...)
+      - pattern-not: render_template_string("...", ...)
     message: >
-      Potential Server-Side Template Injection (SSTI): render_template_string
-      is called with a string built via concatenation or formatting from
-      user-controlled data. An attacker can inject Jinja2 template syntax
-      to execute arbitrary code on the server. Use render_template() with a
-      static template file, or sanitize all user input before passing it to
-      render_template_string.
+      Potential SSTI: render_template_string is called with a dynamically
+      constructed template rather than a plain string literal. If the template
+      contains user-controlled data, an attacker can inject Jinja2 template
+      syntax to execute arbitrary code on the server. Use render_template()
+      with a static template file instead, or sanitize all user input before
+      passing it to render_template_string.
     languages: [python]
     severity: ERROR
     metadata:
