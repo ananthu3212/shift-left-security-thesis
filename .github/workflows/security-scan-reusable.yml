@@ -83,6 +83,9 @@ jobs:
         # Default rules detect service credentials (AWS keys, GitHub tokens).
         # Custom rules extend this to catch hardcoded Flask secret keys
         # and HMAC keys — a gap identified during the portability evaluation.
+        # set +e / set -e wraps the gitleaks command so bash does not exit
+        # automatically on non-zero return, allowing fail-on-findings to
+        # correctly control pipeline blocking behaviour.
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
 
@@ -96,9 +99,11 @@ jobs:
             echo "✅ Custom Gitleaks config loaded from thesis repo" >> $GITHUB_STEP_SUMMARY
           fi
 
+          set +e
           ./gitleaks detect --source . -v $CONFIG_FLAG \
             --report-format json --report-path gitleaks-report.json
           exit_code=$?
+          set -e
 
           echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
           if [ $exit_code -eq 0 ]; then
@@ -186,7 +191,7 @@ jobs:
         # Downloads 9 custom Semgrep rules targeting Flask vulnerability patterns:
         # insecure deserialization, path traversal, open redirect, sensitive data
         # exposure, CORS wildcard, CSP unsafe-inline, debug mode, SSTI via
-        # f-string/concatenation, and JWT insecure decode.
+        # dynamic template, and JWT insecure decode.
         if: inputs.enable-flask-rules
         run: |
           mkdir -p thesis-custom-rules
