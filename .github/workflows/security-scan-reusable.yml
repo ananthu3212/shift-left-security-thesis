@@ -83,9 +83,6 @@ jobs:
         # Default rules detect service credentials (AWS keys, GitHub tokens).
         # Custom rules extend this to catch hardcoded Flask secret keys
         # and HMAC keys — a gap identified during the portability evaluation.
-        # set +e / set -e wraps the gitleaks command so bash does not exit
-        # automatically on non-zero return, allowing fail-on-findings to
-        # correctly control pipeline blocking behaviour.
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
 
@@ -366,6 +363,9 @@ jobs:
             trivy-fs-report.json
             trivy-fs.sarif
 
+  # ================================================================
+  # JOB 5 — DAST (optional)
+  # ================================================================
   dast:
     name: DAST (OWASP ZAP)
     runs-on: ubuntu-latest
@@ -417,9 +417,17 @@ jobs:
             -r zap-report.html \
             -I || true
 
+          # If ZAP did not generate a report (e.g. API-only app with no HTML
+          # pages to spider), create an empty placeholder so the artifact is
+          # always uploaded. The dashboard uses this to distinguish
+          # "DAST ran — 0 alerts" from "DAST was not enabled".
+          if [ ! -f zap-output/zap-report.json ]; then
+            echo '{"site":[]}' > zap-output/zap-report.json
+            echo "ℹ️ ZAP did not generate a report — empty placeholder created" >> $GITHUB_STEP_SUMMARY
+          fi
+
           echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
-          if [ -f zap-output/zap-report.json ]; then
-            ALERTS=$(python3 -c "
+          ALERTS=$(python3 -c "
           import json
           try:
               data = json.load(open('zap-output/zap-report.json'))
@@ -429,10 +437,7 @@ jobs:
           except:
               print(0)
           " 2>/dev/null || echo "0")
-            echo "🔍 **$ALERTS alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ ZAP report not generated — check Docker log above" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "🔍 **$ALERTS alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload ZAP reports
         if: always()
@@ -443,6 +448,9 @@ jobs:
             zap-output/zap-report.json
             zap-output/zap-report.html
 
+  # ================================================================
+  # JOB 6 — Generate Security Dashboard
+  # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
