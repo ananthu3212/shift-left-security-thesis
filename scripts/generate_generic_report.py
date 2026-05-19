@@ -174,7 +174,7 @@ def severity_counts(items, key="severity"):
 
 
 def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
-                  tfsec_findings, zap_findings,
+                  tfsec_findings, zap_findings, zap_was_run,
                   commit_sha, run_number, repo_name):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     total_findings = (len(semgrep_findings) + len(gitleaks_findings) +
@@ -300,7 +300,10 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     if not tfsec_rows:
         tfsec_rows = '<tr><td colspan="5" class="text-center text-muted">No IaC findings detected</td></tr>'
 
-    # ZAP rows
+    # ZAP rows — three distinct states:
+    # 1. zap_findings > 0  → show alert table
+    # 2. zap_was_run and zap_findings == 0 → DAST ran, 0 alerts found
+    # 3. not zap_was_run  → DAST was not enabled
     zap_rows = ""
     if zap_findings:
         for a in zap_findings:
@@ -318,10 +321,20 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
             <td>{a["count"]}</td>
             <td><small class="text-muted">{a["solution"][:150]}</small></td>
         </tr>"""
+    elif zap_was_run:
+        zap_rows = '<tr><td colspan="5" class="text-center text-muted">✅ DAST scan completed — 0 alerts detected on this application</td></tr>'
     else:
-        zap_rows = '<tr><td colspan="5" class="text-center text-muted">DAST not enabled — set enable-dast: true in your workflow to activate ZAP scanning</td></tr>'
+        zap_rows = '<tr><td colspan="5" class="text-center text-muted">DAST not enabled — set <code>enable-dast: true</code> in your workflow to activate ZAP scanning</td></tr>'
 
-    # ZAP section — show only when DAST was enabled
+    # ZAP metric card text — three states
+    if zap_findings:
+        zap_card_text = "<strong style='color:#a371f7'>DAST scan completed.</strong> ZAP performed a baseline scan against the running application via HTTP. Dynamic analysis complements static tools by detecting runtime security issues such as missing security headers and CORS misconfigurations."
+    elif zap_was_run:
+        zap_card_text = "<strong style='color:#3fb950'>DAST scan completed — 0 alerts.</strong> ZAP scanned the running application but detected no alerts. This may indicate the application does not serve HTML pages (API-only), or that no baseline security header issues were found."
+    else:
+        zap_card_text = "<strong style='color:#8b949e'>DAST not enabled.</strong> Add <code>enable-dast: true</code>, <code>app-start-command</code>, and <code>app-port</code> to your workflow to activate OWASP ZAP dynamic scanning."
+
+    # ZAP section
     zap_section = f"""
   <h5 class="section-title">🔒 DAST Results (OWASP ZAP 2.17.0)</h5>
   <div class="row g-3 mb-3">
@@ -359,7 +372,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </table>
   </div>"""
 
-    # ZAP metric card — shown always
+    # ZAP metric card
     zap_metric_card = f"""
   <div class="row g-3 mb-4">
     <div class="col-md-3">
@@ -375,9 +388,7 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     </div>
     <div class="col-md-9">
       <div class="metric-card" style="text-align:left;">
-        <small class="text-muted">
-          {"<strong style='color:#a371f7'>DAST scan completed.</strong> ZAP performed a baseline scan against the running application via HTTP. Dynamic analysis complements static tools by detecting runtime security issues such as missing security headers and CORS misconfigurations." if zap_findings else "<strong style='color:#8b949e'>DAST not enabled.</strong> Add <code>enable-dast: true</code>, <code>app-start-command</code>, and <code>app-port</code> to your workflow to activate OWASP ZAP dynamic scanning."}
-        </small>
+        <small class="text-muted">{zap_card_text}</small>
       </div>
     </div>
   </div>"""
@@ -629,7 +640,12 @@ def main():
     gitleaks_data = load_json(gitleaks_path) or []
     trivy_data    = load_json(trivy_fs_path) or {"Results": []}
     tfsec_data    = load_json(tfsec_path)    or {"results": []}
-    zap_data      = load_json(zap_path)      or {}
+    zap_data      = load_json(zap_path)
+
+    # zap_was_run: True if ZAP report file was found (even with 0 alerts)
+    # Distinguishes "DAST not enabled" from "DAST ran but found nothing"
+    zap_was_run   = zap_data is not None
+    zap_data      = zap_data or {}
 
     commit_sha = os.environ.get("GITHUB_SHA", "local")
     run_number = os.environ.get("GITHUB_RUN_NUMBER", "0")
@@ -643,7 +659,7 @@ def main():
 
     html = generate_html(
         semgrep_findings, gitleaks_findings, trivy_cves,
-        tfsec_findings, zap_findings,
+        tfsec_findings, zap_findings, zap_was_run,
         commit_sha, run_number, repo_name
     )
 
@@ -658,6 +674,7 @@ def main():
     print(f"Trivy CVEs:        {len(trivy_cves)}")
     print(f"tfsec findings:    {len(tfsec_findings)}")
     print(f"ZAP alerts:        {len(zap_findings)}")
+    print(f"ZAP ran:           {zap_was_run}")
 
 
 if __name__ == "__main__":
