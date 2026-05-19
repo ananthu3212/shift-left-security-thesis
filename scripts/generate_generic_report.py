@@ -326,13 +326,34 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
     else:
         zap_rows = '<tr><td colspan="5" class="text-center text-muted">DAST not enabled — set <code>enable-dast: true</code> in your workflow to activate ZAP scanning</td></tr>'
 
-    # ZAP metric card text — three states
+    # ZAP metric card text — three states (FIXED: now checks zap_was_run correctly)
     if zap_findings:
         zap_card_text = "<strong style='color:#a371f7'>DAST scan completed.</strong> ZAP performed a baseline scan against the running application via HTTP. Dynamic analysis complements static tools by detecting runtime security issues such as missing security headers and CORS misconfigurations."
     elif zap_was_run:
         zap_card_text = "<strong style='color:#3fb950'>DAST scan completed — 0 alerts.</strong> ZAP scanned the running application but detected no alerts. This may indicate the application does not serve HTML pages (API-only), or that no baseline security header issues were found."
     else:
         zap_card_text = "<strong style='color:#8b949e'>DAST not enabled.</strong> Add <code>enable-dast: true</code>, <code>app-start-command</code>, and <code>app-port</code> to your workflow to activate OWASP ZAP dynamic scanning."
+
+    # ZAP metric card
+    zap_metric_card = f"""
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="metric-card">
+        <div class="metric-value" style="color:#a371f7">{zap_total}</div>
+        <div class="metric-label">🔒 DAST Alerts (ZAP)</div>
+        <div class="mt-2">
+          <small class="text-danger">{zap_high} High</small> &nbsp;
+          <small class="text-warning">{zap_medium} Medium</small> &nbsp;
+          <small class="text-info">{zap_low} Low</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-9">
+      <div class="metric-card" style="text-align:left;">
+        <small class="text-muted">{zap_card_text}</small>
+      </div>
+    </div>
+  </div>"""
 
     # ZAP section
     zap_section = f"""
@@ -370,27 +391,6 @@ def generate_html(semgrep_findings, gitleaks_findings, trivy_cves,
       </tr></thead>
       <tbody>{zap_rows}</tbody>
     </table>
-  </div>"""
-
-    # ZAP metric card
-    zap_metric_card = f"""
-  <div class="row g-3 mb-4">
-    <div class="col-md-3">
-      <div class="metric-card">
-        <div class="metric-value" style="color:#a371f7">{zap_total}</div>
-        <div class="metric-label">🔒 DAST Alerts (ZAP)</div>
-        <div class="mt-2">
-          <small class="text-danger">{zap_high} High</small> &nbsp;
-          <small class="text-warning">{zap_medium} Medium</small> &nbsp;
-          <small class="text-info">{zap_low} Low</small>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-9">
-      <div class="metric-card" style="text-align:left;">
-        <small class="text-muted">{zap_card_text}</small>
-      </div>
-    </div>
   </div>"""
 
     html = f"""<!DOCTYPE html>
@@ -610,7 +610,7 @@ new Chart(document.getElementById('rulesetChart'), {{
   data: {{
     labels: ['Custom Rules', 'Default Ruleset', 'No Findings'],
     datasets: [{{
-      data: [{custom_count}, {default_count}, {max(0, 1 if total_findings == 0 else 0)}],
+      data: [{custom_count}, {default_count}, {1 if total_findings == 0 else 0}],
       backgroundColor: ['#3fb95099','#388bfd99','#21262d'],
       borderColor:     ['#3fb950',  '#388bfd',  '#30363d'],
       borderWidth: 2
