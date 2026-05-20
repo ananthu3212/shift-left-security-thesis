@@ -513,7 +513,7 @@ jobs:
             zap-output/zap-report.html
 
   # ================================================================
-  # JOB 6 — Generate Security Dashboard
+  # JOB 6 — Generate Security Dashboard..
   # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
