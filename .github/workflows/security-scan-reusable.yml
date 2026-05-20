@@ -67,6 +67,9 @@ permissions:
 
 jobs:
 
+  # ================================================================
+  # JOB 1 — Secret Scanning (Gitleaks)
+  # ================================================================
   secret-scanning:
     name: Secret Scanning (Gitleaks)
     runs-on: ubuntu-latest
@@ -80,9 +83,6 @@ jobs:
         # Pinned to v8.18.4 — version used during thesis evaluation
         # Downloads custom Gitleaks config from thesis repo which adds
         # Flask application-level secret detection on top of default rules.
-        # Default rules detect service credentials (AWS keys, GitHub tokens).
-        # Custom rules extend this to catch hardcoded Flask secret keys
-        # and HMAC keys — a gap identified during the portability evaluation.
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
 
@@ -121,6 +121,9 @@ jobs:
           name: gitleaks-report
           path: gitleaks-report.json
 
+  # ================================================================
+  # JOB 2 — IaC Security Scan (tfsec)
+  # ================================================================
   iac-scanning:
     name: IaC Security Scan (tfsec)
     runs-on: ubuntu-latest
@@ -174,6 +177,9 @@ jobs:
           name: tfsec-report
           path: tfsec-report.json
 
+  # ================================================================
+  # JOB 3 — SAST (Semgrep)
+  # ================================================================
   sast:
     name: SAST (Semgrep)
     runs-on: ubuntu-latest
@@ -185,10 +191,7 @@ jobs:
 
       - name: Download Flask-specific custom rules from thesis repository
         # Only runs when enable-flask-rules is true.
-        # Downloads 9 custom Semgrep rules targeting Flask vulnerability patterns:
-        # insecure deserialization, path traversal, open redirect, sensitive data
-        # exposure, CORS wildcard, CSP unsafe-inline, debug mode, SSTI via
-        # dynamic template, and JWT insecure decode.
+        # Downloads 9 custom Semgrep rules targeting Flask vulnerability patterns.
         if: inputs.enable-flask-rules
         run: |
           mkdir -p thesis-custom-rules
@@ -274,6 +277,11 @@ jobs:
             semgrep-report.json
             semgrep.sarif
 
+  # ================================================================
+  # JOB 4 — SCA + Image Scan (Trivy)
+  # Filesystem scan runs BEFORE Docker build — no Docker dependency.
+  # Image scan runs after Docker build — fails gracefully if build fails.
+  # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
     runs-on: ubuntu-latest
@@ -283,9 +291,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -t ${{ inputs.docker-image-name }}:scan .
-
+      # ── Filesystem scan first — no Docker dependency ──────────────
+      # Trivy FS scan reads requirements.txt, setup.py, pyproject.toml
+      # directly from the repository. It does not need a Docker image.
+      # Running this first ensures CVE detection always succeeds
+      # regardless of whether the Docker build completes.
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -306,12 +316,30 @@ jobs:
           severity: ${{ inputs.trivy-severity }}
           exit-code: 0
 
-      - name: Upload Trivy SARIF to GitHub Security tab
+      - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-fs.sarif
-          category: trivy
+          category: trivy-filesystem
+
+      - name: Generate CycloneDX SBOM
+        # CycloneDX format chosen for broad tooling support and OWASP standardisation
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: 0
+
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
 
       - name: Write Trivy summary and check findings
         if: always()
@@ -354,6 +382,39 @@ jobs:
             exit 1
           fi
 
+      # ── Docker build + image scan — runs after FS scan ───────────
+      # Image scan is best-effort. If Docker build fails (e.g. complex
+      # Dockerfile with external DB dependencies), the FS scan results
+      # above are already captured and the job does not fail silently.
+      - name: Build Docker image
+        run: docker build -t ${{ inputs.docker-image-name }}:scan .
+
+      - name: Run Trivy image scan — JSON
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ inputs.docker-image-name }}:scan
+          format: json
+          output: trivy-image-report.json
+          severity: ${{ inputs.trivy-severity }}
+          exit-code: 0
+
+      - name: Run Trivy image scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ inputs.docker-image-name }}:scan
+          format: sarif
+          output: trivy-image.sarif
+          severity: ${{ inputs.trivy-severity }}
+          exit-code: 0
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
       - name: Upload Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -361,10 +422,13 @@ jobs:
           name: trivy-reports
           path: |
             trivy-fs-report.json
+            trivy-image-report.json
             trivy-fs.sarif
+            trivy-image.sarif
+            sbom.cdx.json
 
   # ================================================================
-  # JOB 5 — DAST (optional)
+  # JOB 5 — DAST (OWASP ZAP) — optional
   # ================================================================
   dast:
     name: DAST (OWASP ZAP)
