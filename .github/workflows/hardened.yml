@@ -100,9 +100,6 @@ jobs:
 
       - name: Run tfsec on Terraform infrastructure
         # Pinned to v1.28.11 — version used during thesis evaluation.
-        # --soft-fail: tfsec returns exit 0 so findings are reported
-        # without blocking this job. Pipeline gate logic is handled
-        # in the step summary below.
         run: |
           curl -sSfL \
             https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 \
@@ -189,11 +186,12 @@ jobs:
       - name: Run Semgrep with default and custom rules
         # Pinned to v1.162.0 — version used during thesis evaluation.
         # Loads two rule sets:
-        #   p/python        — default Semgrep Python ruleset
-        #   rules/          — 9 custom Flask-specific rules from this repository
-        # Of the 9 custom rules, 7 fire on flask-webgoat (V04-V10 in ground truth).
-        # The remaining 2 (ssti-fstring, jwt-insecure-decode) target patterns
-        # not present in flask-webgoat but valid for other Flask applications.
+        #   p/python  — default Semgrep Python ruleset
+        #   rules/    — 9 custom Flask-specific rules from this repository
+        # Of the 9 custom rules, 7 fire on flask-webgoat (V04-V10).
+        # The remaining 2 (ssti-fstring, jwt-insecure-decode) target
+        # patterns not present in flask-webgoat but valid for other
+        # Flask applications.
         run: |
           pip install semgrep==1.162.0
 
@@ -257,13 +255,16 @@ jobs:
   # STAGE 3 — SCA + Image Scan (Trivy)
   # Runs after Semgrep completes.
   #
-  # ARCHITECTURAL DECISION — FS scan runs BEFORE Docker build:
-  # Trivy FS scan reads requirements.txt and pyproject.toml directly
-  # from the repository. It does not need a Docker image.
-  # Placing the FS scan first guarantees CVE detection succeeds
-  # regardless of whether the Docker build completes.
-  # Docker build and image scan run afterwards as additional analysis.
-  # This is the correct architectural fix — not continue-on-error.
+  # ARCHITECTURAL DECISION — correct step order:
+  #   1. FS scan (no Docker needed) — CVE detection always succeeds
+  #   2. SBOM generation (no Docker needed)
+  #   3. Docker build
+  #   4. Image scan (after Docker build)
+  #   5. Summary + gate (AFTER all scans complete)
+  #
+  # The summary/exit check is placed LAST so that both FS scan and
+  # image scan always run to completion before the pipeline gate fires.
+  # This ensures complete data collection for the thesis evaluation.
   # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy)
@@ -306,9 +307,7 @@ jobs:
       # ── Step 2: SBOM — NO Docker dependency ──────────────────────
       - name: Generate CycloneDX SBOM
         # CycloneDX format chosen for broad tooling support
-        # and OWASP standardisation. Generated from filesystem
-        # to ensure SBOM is always produced regardless of
-        # Docker build outcome.
+        # and OWASP standardisation.
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -324,8 +323,54 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.cdx.json
 
-      # ── Step 3: Report FS findings ────────────────────────────────
-      - name: Write Trivy FS summary and check findings
+      # ── Step 3: Docker build ──────────────────────────────────────
+      - name: Build Docker image
+        run: docker build -t flask-webgoat:hardened .
+
+      # ── Step 4: Image scan — AFTER Docker build ───────────────────
+      - name: Run Trivy image scan — JSON
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:hardened
+          format: json
+          output: trivy-image-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Run Trivy image scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:hardened
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # ── Step 5: Upload all reports ────────────────────────────────
+      - name: Upload all Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: |
+            trivy-fs-report.json
+            trivy-image-report.json
+            trivy-fs.sarif
+            trivy-image.sarif
+            sbom.cdx.json
+
+      # ── Step 6: Summary and gate — AFTER all scans complete ───────
+      # Placed last so both FS and image scans always run to
+      # completion before the pipeline gate fires.
+      - name: Write Trivy summary and check findings
         if: always()
         run: |
           echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
@@ -353,58 +398,17 @@ jobs:
           echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "📋 **SBOM generated:** CycloneDX format — artifact \`sbom-cyclonedx\`" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **SBOM generated:** CycloneDX format — artifact \`sbom-cyclonedx\`" \
+            >> $GITHUB_STEP_SUMMARY
 
           TOTAL=$((FS_CRITICAL + FS_HIGH))
           if [ $TOTAL -gt 0 ]; then
-            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected** — pipeline blocked" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected** — pipeline blocked" \
+              >> $GITHUB_STEP_SUMMARY
             exit 1
           else
             echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
           fi
-
-      # ── Step 4: Docker build — AFTER FS scan ─────────────────────
-      - name: Build Docker image
-        run: docker build -t flask-webgoat:hardened .
-
-      # ── Step 5: Image scan — AFTER Docker build ───────────────────
-      - name: Run Trivy image scan — JSON
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: flask-webgoat:hardened
-          format: json
-          output: trivy-image-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Run Trivy image scan — SARIF
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: flask-webgoat:hardened
-          format: sarif
-          output: trivy-image.sarif
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Upload Trivy image SARIF to GitHub Security tab
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
-
-      - name: Upload all Trivy reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-reports
-          path: |
-            trivy-fs-report.json
-            trivy-image-report.json
-            trivy-fs.sarif
-            trivy-image.sarif
-            sbom.cdx.json
 
   # ================================================================
   # STAGE 4 — DAST (OWASP ZAP)
@@ -444,11 +448,9 @@ jobs:
       - name: Run OWASP ZAP baseline scan via Docker
         # --user root: ZAP container requires write access to mounted output dir
         # --network host: allows ZAP container to reach Flask on runner localhost
-        # -I flag: report findings but do not block — ZAP is informational in
-        #          this pipeline. Findings are reported in the dashboard.
-        # Trivy uses latest CVE database on each run — intentional design.
+        # -I flag: report findings but do not block the pipeline
         # ZAP version is not pinned — zaproxy:stable tracks latest stable release.
-        # Both documented as threats to validity in the thesis evaluation chapter.
+        # Documented as a threat to validity in the thesis evaluation chapter.
         run: |
           mkdir -p zap-output
           chmod 777 zap-output
@@ -486,7 +488,8 @@ jobs:
           try:
               data = json.load(open('zap-output/zap-report.json'))
               sites = data.get('site', [])
-              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '3')
+              total = sum(1 for s in sites for a in s.get('alerts', [])
+                          if a.get('riskcode') == '3')
               print(total)
           except:
               print(0)
@@ -497,7 +500,8 @@ jobs:
           try:
               data = json.load(open('zap-output/zap-report.json'))
               sites = data.get('site', [])
-              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '2')
+              total = sum(1 for s in sites for a in s.get('alerts', [])
+                          if a.get('riskcode') == '2')
               print(total)
           except:
               print(0)
@@ -508,7 +512,8 @@ jobs:
           try:
               data = json.load(open('zap-output/zap-report.json'))
               sites = data.get('site', [])
-              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '1')
+              total = sum(1 for s in sites for a in s.get('alerts', [])
+                          if a.get('riskcode') == '1')
               print(total)
           except:
               print(0)
@@ -581,4 +586,5 @@ jobs:
         if: always()
         run: |
           echo "## 🌐 Security Dashboard" >> $GITHUB_STEP_SUMMARY
-          echo "**https://ananthu3212.github.io/shift-left-security-thesis/**" >> $GITHUB_STEP_SUMMARY
+          echo "**https://ananthu3212.github.io/shift-left-security-thesis/**" \
+            >> $GITHUB_STEP_SUMMARY

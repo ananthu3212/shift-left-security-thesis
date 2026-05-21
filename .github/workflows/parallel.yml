@@ -8,12 +8,10 @@
 # IMPORTANT: Tool versions, configurations, and rule sets are
 # IDENTICAL to hardened.yml. The ONLY difference is execution
 # order — parallel here vs sequential in hardened.yml.
-# This ensures runtime comparison measures execution architecture
-# only, not tool configuration differences.
 #
 # Sequential (hardened.yml):
 #   Gitleaks+tfsec → Semgrep → Trivy → ZAP → Dashboard
-#   Advantage: early exit gate — secret found blocks downstream
+#   Advantage: early exit gate between stages
 #   Disadvantage: longer total wall-clock time
 #
 # Parallel (this file):
@@ -23,7 +21,7 @@
 #   Trivy    ──┤
 #   ZAP      ──┘
 #   Advantage: shorter wall-clock time
-#   Disadvantage: all tools always run — no early exit gate
+#   Disadvantage: no early exit gate — all tools always run
 #
 # Thesis: Shift-Left Security in CI/CD Pipelines
 # Author: Ananthu Chandra Babu
@@ -65,8 +63,6 @@ jobs:
         # Pinned to v8.18.4 — IDENTICAL to hardened.yml.
         # Uses .gitleaks.toml from the flask-webgoat repository root —
         # IDENTICAL configuration to hardened.yml for valid comparison.
-        # Parallel mode: pipeline continues even if secrets detected
-        # because all jobs run to completion regardless.
         run: |
           curl -sSfL \
             https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
@@ -89,7 +85,8 @@ jobs:
           data = json.load(open('gitleaks-report.json'))
           print(len(data))" 2>/dev/null || echo "1+")
             echo "❌ **$COUNT secret(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" \
+              >> $GITHUB_STEP_SUMMARY
           fi
 
       - name: Upload Gitleaks report
@@ -224,7 +221,8 @@ jobs:
             echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **$FINDINGS finding(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" \
+              >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
             echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
@@ -260,10 +258,13 @@ jobs:
   # JOB 4 — SCA + Image Scan (Trivy) [PARALLEL]
   # No dependencies — starts immediately.
   #
-  # ARCHITECTURAL DECISION — FS scan runs BEFORE Docker build:
-  # Identical to hardened.yml. FS scan captures CVE data from
-  # requirements.txt without Docker dependency. Docker build and
-  # image scan run after as additional analysis.
+  # Step order matches hardened.yml exactly:
+  #   1. FS scan (no Docker)
+  #   2. SBOM (no Docker)
+  #   3. Docker build
+  #   4. Image scan
+  #   5. Upload reports
+  #   6. Summary (LAST — after all scans complete)
   # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy) [PARALLEL]
@@ -272,7 +273,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ── FS scan first — no Docker dependency ──────────────────────
+      # ── Step 1: Filesystem scan — NO Docker dependency ────────────
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -301,8 +302,8 @@ jobs:
           sarif_file: trivy-fs.sarif
           category: trivy-filesystem
 
+      # ── Step 2: SBOM — NO Docker dependency ──────────────────────
       - name: Generate CycloneDX SBOM
-        # IDENTICAL to hardened.yml — both pipelines generate SBOM.
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
@@ -318,7 +319,52 @@ jobs:
           name: sbom-cyclonedx
           path: sbom.cdx.json
 
-      - name: Write Trivy FS summary
+      # ── Step 3: Docker build ──────────────────────────────────────
+      - name: Build Docker image
+        run: docker build -t flask-webgoat:parallel .
+
+      # ── Step 4: Image scan — AFTER Docker build ───────────────────
+      - name: Run Trivy image scan — JSON
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:parallel
+          format: json
+          output: trivy-image-report.json
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Run Trivy image scan — SARIF
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: flask-webgoat:parallel
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          exit-code: 0
+
+      - name: Upload Trivy image SARIF to GitHub Security tab
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # ── Step 5: Upload all reports ────────────────────────────────
+      - name: Upload all Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: |
+            trivy-fs-report.json
+            trivy-image-report.json
+            trivy-fs.sarif
+            trivy-image.sarif
+            sbom.cdx.json
+
+      # ── Step 6: Summary — AFTER all scans complete ────────────────
+      - name: Write Trivy summary
         if: always()
         run: |
           echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
@@ -351,59 +397,15 @@ jobs:
           TOTAL=$((FS_CRITICAL + FS_HIGH))
           if [ $TOTAL -gt 0 ]; then
             echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" \
+              >> $GITHUB_STEP_SUMMARY
           else
             echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # ── Docker build + image scan — after FS scan ─────────────────
-      - name: Build Docker image
-        run: docker build -t flask-webgoat:parallel .
-
-      - name: Run Trivy image scan — JSON
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: flask-webgoat:parallel
-          format: json
-          output: trivy-image-report.json
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Run Trivy image scan — SARIF
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: flask-webgoat:parallel
-          format: sarif
-          output: trivy-image.sarif
-          severity: HIGH,CRITICAL
-          exit-code: 0
-
-      - name: Upload Trivy image SARIF to GitHub Security tab
-        if: always()
-        continue-on-error: true
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: trivy-image.sarif
-          category: trivy-image
-
-      - name: Upload all Trivy reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: trivy-reports
-          path: |
-            trivy-fs-report.json
-            trivy-image-report.json
-            trivy-fs.sarif
-            trivy-image.sarif
-            sbom.cdx.json
-
   # ================================================================
   # JOB 5 — DAST (OWASP ZAP) [PARALLEL]
   # No dependencies — starts immediately on its own runner.
-  # Each GitHub Actions job runs on a separate isolated runner.
-  # This job installs dependencies, starts flask-webgoat, and
-  # runs ZAP entirely independently of the other four jobs.
   # ================================================================
   dast:
     name: DAST (OWASP ZAP) [PARALLEL]
@@ -418,7 +420,7 @@ jobs:
           python-version: '3.9'
 
       - name: Install Flask application dependencies
-        # IDENTICAL to hardened.yml — flask-webgoat requirements install cleanly.
+        # IDENTICAL to hardened.yml.
         run: pip install -r requirements.txt
 
       - name: Start flask-webgoat for dynamic scanning
@@ -433,7 +435,6 @@ jobs:
 
       - name: Run OWASP ZAP baseline scan via Docker
         # IDENTICAL configuration to hardened.yml.
-        # --user root, --network host, -I flag — same rationale as hardened.yml.
         run: |
           mkdir -p zap-output
           chmod 777 zap-output
@@ -471,7 +472,8 @@ jobs:
           try:
               data = json.load(open('zap-output/zap-report.json'))
               sites = data.get('site', [])
-              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '3')
+              total = sum(1 for s in sites for a in s.get('alerts', [])
+                          if a.get('riskcode') == '3')
               print(total)
           except:
               print(0)
@@ -482,7 +484,8 @@ jobs:
           try:
               data = json.load(open('zap-output/zap-report.json'))
               sites = data.get('site', [])
-              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '2')
+              total = sum(1 for s in sites for a in s.get('alerts', [])
+                          if a.get('riskcode') == '2')
               print(total)
           except:
               print(0)
@@ -493,7 +496,8 @@ jobs:
           try:
               data = json.load(open('zap-output/zap-report.json'))
               sites = data.get('site', [])
-              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '1')
+              total = sum(1 for s in sites for a in s.get('alerts', [])
+                          if a.get('riskcode') == '1')
               print(total)
           except:
               print(0)
@@ -506,7 +510,8 @@ jobs:
           echo "| 🔵 Low    | $LOW |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "🔍 **$ALERTS total alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" \
+            >> $GITHUB_STEP_SUMMARY
 
       - name: Upload ZAP reports
         if: always()
@@ -520,8 +525,7 @@ jobs:
   # ================================================================
   # JOB 6 — Generate Security Dashboard
   # Waits for ALL five scanning jobs to complete.
-  # No GitHub Pages deployment — parallel pipeline is for runtime
-  # comparison only. Dashboard uploaded as artifact.
+  # No GitHub Pages deployment — parallel is runtime comparison only.
   # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
@@ -560,4 +564,5 @@ jobs:
           echo "All five scan jobs ran simultaneously." >> $GITHUB_STEP_SUMMARY
           echo "Total wall-clock time = duration of the longest single job." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Compare this run duration with hardened.yml for the thesis runtime evaluation." >> $GITHUB_STEP_SUMMARY
+          echo "Compare this run duration with hardened.yml for thesis runtime evaluation." \
+            >> $GITHUB_STEP_SUMMARY
