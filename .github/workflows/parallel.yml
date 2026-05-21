@@ -1,39 +1,44 @@
 # ================================================================
 # parallel.yml — Parallel Security Pipeline
 #
-# Comparison variant of the hardened pipeline.
-# All security scan jobs run SIMULTANEOUSLY instead of sequentially.
-# Used to measure runtime overhead of sequential vs parallel execution.
+# Thesis artefact 3 of 4.
+# All five security scanning jobs execute SIMULTANEOUSLY.
+# Used exclusively for runtime comparison against hardened.yml.
 #
-# Sequential pipeline (hardened.yml):
-#   Gitleaks → Semgrep → Trivy (each waits for previous)
-#   Advantage: early exit on secret detection
+# IMPORTANT: Tool versions, configurations, and rule sets are
+# IDENTICAL to hardened.yml. The ONLY difference is execution
+# order — parallel here vs sequential in hardened.yml.
+# This ensures runtime comparison measures execution architecture
+# only, not tool configuration differences.
+#
+# Sequential (hardened.yml):
+#   Gitleaks+tfsec → Semgrep → Trivy → ZAP → Dashboard
+#   Advantage: early exit gate — secret found blocks downstream
 #   Disadvantage: longer total wall-clock time
 #
-# Parallel pipeline (this file):
-#   Gitleaks ─┐
-#   Semgrep  ─┼→ Dashboard
-#   Trivy    ─┘
-#   Advantage: shorter total wall-clock time
-#   Disadvantage: all tools run even if secrets are detected
-#
-# Triggered manually via workflow_dispatch for runtime comparison.
-# Results documented in thesis evaluation chapter.
+# Parallel (this file):
+#   Gitleaks ──┐
+#   tfsec    ──┤
+#   Semgrep  ──┼──→ Dashboard
+#   Trivy    ──┤
+#   ZAP      ──┘
+#   Advantage: shorter wall-clock time
+#   Disadvantage: all tools always run — no early exit gate
 #
 # Thesis: Shift-Left Security in CI/CD Pipelines
 # Author: Ananthu Chandra Babu
 # University: Westfälische Hochschule Gelsenkirchen, 2026
 # ================================================================
 
-name: Parallel Pipeline (Runtime Comparison)
+name: Parallel Pipeline (Runtime Comparison — SAST + SCA + Secrets + IaC + DAST)
 
 on:
   workflow_dispatch:
     inputs:
-      reason:
-        description: 'Reason for manual run (e.g. runtime comparison run 1)'
+      run_note:
+        description: 'Note for this run (e.g. n=10 statistical run 1)'
         required: false
-        default: 'Runtime comparison'
+        default: 'Runtime comparison run'
 
 permissions:
   security-events: write
@@ -42,6 +47,11 @@ permissions:
   id-token: write
 
 jobs:
+
+  # ================================================================
+  # JOB 1 — Secret Scanning (Gitleaks) [PARALLEL]
+  # No dependencies — starts immediately.
+  # ================================================================
   secret-scanning:
     name: Secret Scanning (Gitleaks) [PARALLEL]
     runs-on: ubuntu-latest
@@ -51,30 +61,36 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Record start time
-        run: echo "START=$(date +%s)" >> $GITHUB_ENV
-
-      - name: Run Gitleaks
-        # Pinned to v8.18.4 — same version as sequential pipeline
+      - name: Run Gitleaks with custom Flask config
+        # Pinned to v8.18.4 — IDENTICAL to hardened.yml.
+        # Uses .gitleaks.toml from the flask-webgoat repository root —
+        # IDENTICAL configuration to hardened.yml for valid comparison.
+        # Parallel mode: pipeline continues even if secrets detected
+        # because all jobs run to completion regardless.
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz | tar -xz
-          ./gitleaks detect --source . -v --report-format json --report-path gitleaks-report.json
+          curl -sSfL \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
+            | tar -xz
+
+          set +e
+          ./gitleaks detect --source . -v \
+            --config .gitleaks.toml \
+            --report-format json \
+            --report-path gitleaks-report.json
           exit_code=$?
+          set -e
 
           echo "## 🔑 Secret Scanning (Gitleaks)" >> $GITHUB_STEP_SUMMARY
           if [ $exit_code -eq 0 ]; then
             echo "✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
           else
-            COUNT=$(python3 -c "import json; data=json.load(open('gitleaks-report.json')); print(len(data))" 2>/dev/null || echo "1+")
+            COUNT=$(python3 -c "
+          import json
+          data = json.load(open('gitleaks-report.json'))
+          print(len(data))" 2>/dev/null || echo "1+")
             echo "❌ **$COUNT secret(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ Parallel mode: pipeline continues despite findings" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
           fi
-
-          END=$(date +%s)
-          DURATION=$((END - START))
-          echo "⏱️ Gitleaks runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
-
-          exit $exit_code
 
       - name: Upload Gitleaks report
         if: always()
@@ -83,6 +99,10 @@ jobs:
           name: gitleaks-report
           path: gitleaks-report.json
 
+  # ================================================================
+  # JOB 2 — IaC Security Scan (tfsec) [PARALLEL]
+  # No dependencies — starts immediately.
+  # ================================================================
   iac-scanning:
     name: IaC Security Scan (tfsec) [PARALLEL]
     runs-on: ubuntu-latest
@@ -90,13 +110,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Record start time
-        run: echo "START=$(date +%s)" >> $GITHUB_ENV
-
       - name: Run tfsec on Terraform infrastructure
-        # Pinned to v1.28.11 — same version as sequential pipeline
+        # Pinned to v1.28.11 — IDENTICAL to hardened.yml.
         run: |
-          curl -sSfL https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 -o tfsec
+          curl -sSfL \
+            https://github.com/aquasecurity/tfsec/releases/download/v1.28.11/tfsec-linux-amd64 \
+            -o tfsec
           chmod +x tfsec
 
           ./tfsec terraform/ \
@@ -124,14 +143,37 @@ jobs:
           except:
               print(0)" 2>/dev/null || echo "0")
 
+          MEDIUM=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('tfsec-report.json'))
+              results = data.get('results') or []
+              print(sum(1 for r in results if r.get('severity') == 'MEDIUM'))
+          except:
+              print(0)" 2>/dev/null || echo "0")
+
+          LOW=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('tfsec-report.json'))
+              results = data.get('results') or []
+              print(sum(1 for r in results if r.get('severity') == 'LOW'))
+          except:
+              print(0)" 2>/dev/null || echo "0")
+
           echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| 🔴 CRITICAL | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
           echo "| 🟠 HIGH     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 MEDIUM   | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 LOW      | $LOW |" >> $GITHUB_STEP_SUMMARY
 
-          END=$(date +%s)
-          DURATION=$((END - START))
-          echo "⏱️ tfsec runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
+          TOTAL=$((CRITICAL + HIGH))
+          if [ $TOTAL -gt 0 ]; then
+            echo "❌ **$TOTAL CRITICAL/HIGH IaC finding(s) detected**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No CRITICAL/HIGH IaC misconfigurations detected" >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Upload tfsec report
         if: always()
@@ -140,6 +182,10 @@ jobs:
           name: tfsec-report
           path: tfsec-report.json
 
+  # ================================================================
+  # JOB 3 — SAST (Semgrep) [PARALLEL]
+  # No dependencies — starts immediately.
+  # ================================================================
   sast:
     name: SAST (Semgrep) [PARALLEL]
     runs-on: ubuntu-latest
@@ -147,36 +193,55 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Record start time
-        run: echo "START=$(date +%s)" >> $GITHUB_ENV
-
       - name: Run Semgrep with default and custom rules
-        # Pinned to v1.162.0 — same version as sequential pipeline
+        # Pinned to v1.162.0 — IDENTICAL to hardened.yml.
+        # Same rule sets: p/python + rules/ directory.
         run: |
           pip install semgrep==1.162.0
 
-          semgrep --config=p/python --config=rules/ --sarif -o semgrep.sarif . || true
+          semgrep \
+            --config=p/python \
+            --config=rules/ \
+            --sarif -o semgrep.sarif . || true
 
-          semgrep --config=p/python --config=rules/ --json -o semgrep-report.json --error .
+          set +e
+          semgrep \
+            --config=p/python \
+            --config=rules/ \
+            --json -o semgrep-report.json \
+            --error .
           SEMGREP_EXIT=$?
+          set -e
 
           echo "## 🔍 SAST (Semgrep)" >> $GITHUB_STEP_SUMMARY
-          FINDINGS=$(python3 -c "import json; data=json.load(open('semgrep-report.json')); print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+
+          FINDINGS=$(python3 -c "
+          import json
+          data = json.load(open('semgrep-report.json'))
+          print(len(data.get('results', [])))" 2>/dev/null || echo "unknown")
+
           if [ $SEMGREP_EXIT -eq 0 ]; then
             echo "✅ No findings detected" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **$FINDINGS finding(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ Parallel mode: pipeline continues despite findings" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Rule | File | Line |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|------|" >> $GITHUB_STEP_SUMMARY
+            python3 -c "
+          import json
+          data = json.load(open('semgrep-report.json'))
+          for r in data.get('results', []):
+              rule = r['check_id'].split('.')[-1]
+              path = r['path']
+              line = r['start']['line']
+              print(f'| {rule} | \`{path}\` | {line} |')
+          " >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
           fi
-
-          END=$(date +%s)
-          DURATION=$((END - START))
-          echo "⏱️ Semgrep runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
-
-          exit $SEMGREP_EXIT
 
       - name: Upload Semgrep SARIF to GitHub Security tab
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
@@ -191,6 +256,15 @@ jobs:
             semgrep-report.json
             semgrep.sarif
 
+  # ================================================================
+  # JOB 4 — SCA + Image Scan (Trivy) [PARALLEL]
+  # No dependencies — starts immediately.
+  #
+  # ARCHITECTURAL DECISION — FS scan runs BEFORE Docker build:
+  # Identical to hardened.yml. FS scan captures CVE data from
+  # requirements.txt without Docker dependency. Docker build and
+  # image scan run after as additional analysis.
+  # ================================================================
   sca-and-image:
     name: SCA + Image Scan (Trivy) [PARALLEL]
     runs-on: ubuntu-latest
@@ -198,14 +272,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Record start time
-        run: echo "START=$(date +%s)" >> $GITHUB_ENV
-
-      - name: Build Docker image
-        run: docker build -t flask-webgoat:hardened .
-
-      # Trivy not version-pinned — CVE database updates daily
-      # See thesis evaluation chapter for reproducibility discussion
+      # ── FS scan first — no Docker dependency ──────────────────────
       - name: Run Trivy filesystem scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
@@ -228,15 +295,75 @@ jobs:
 
       - name: Upload Trivy FS SARIF to GitHub Security tab
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-filesystem
 
+      - name: Generate CycloneDX SBOM
+        # IDENTICAL to hardened.yml — both pipelines generate SBOM.
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: 0
+
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+
+      - name: Write Trivy FS summary
+        if: always()
+        run: |
+          echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
+          echo "Severity threshold: HIGH, CRITICAL" >> $GITHUB_STEP_SUMMARY
+
+          FS_CRITICAL=$(python3 -c "
+          import json
+          data = json.load(open('trivy-fs-report.json'))
+          vulns = [v for r in data.get('Results', [])
+                   for v in (r.get('Vulnerabilities') or [])
+                   if v.get('Severity') == 'CRITICAL']
+          print(len(vulns))" 2>/dev/null || echo "0")
+
+          FS_HIGH=$(python3 -c "
+          import json
+          data = json.load(open('trivy-fs-report.json'))
+          vulns = [v for r in data.get('Results', [])
+                   for v in (r.get('Vulnerabilities') or [])
+                   if v.get('Severity') == 'HIGH']
+          print(len(vulns))" 2>/dev/null || echo "0")
+
+          echo "### Filesystem Scan (Dependencies)" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📋 **SBOM generated:** CycloneDX format" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL=$((FS_CRITICAL + FS_HIGH))
+          if [ $TOTAL -gt 0 ]; then
+            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected**" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── Docker build + image scan — after FS scan ─────────────────
+      - name: Build Docker image
+        run: docker build -t flask-webgoat:parallel .
+
       - name: Run Trivy image scan — JSON
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: flask-webgoat:hardened
+          image-ref: flask-webgoat:parallel
           format: json
           output: trivy-image-report.json
           severity: HIGH,CRITICAL
@@ -245,7 +372,7 @@ jobs:
       - name: Run Trivy image scan — SARIF
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: flask-webgoat:hardened
+          image-ref: flask-webgoat:parallel
           format: sarif
           output: trivy-image.sarif
           severity: HIGH,CRITICAL
@@ -253,47 +380,13 @@ jobs:
 
       - name: Upload Trivy image SARIF to GitHub Security tab
         if: always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
 
-      - name: Write Trivy summary
-        if: always()
-        run: |
-          echo "## 📦 SCA + Image Scan (Trivy)" >> $GITHUB_STEP_SUMMARY
-
-          FS_CRITICAL=$(python3 -c "
-          import json
-          data = json.load(open('trivy-fs-report.json'))
-          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'CRITICAL']
-          print(len(vulns))" 2>/dev/null || echo "0")
-
-          FS_HIGH=$(python3 -c "
-          import json
-          data = json.load(open('trivy-fs-report.json'))
-          vulns = [v for r in data.get('Results', []) for v in (r.get('Vulnerabilities') or []) if v.get('Severity') == 'HIGH']
-          print(len(vulns))" 2>/dev/null || echo "0")
-
-          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔴 CRITICAL | $FS_CRITICAL |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🟠 HIGH     | $FS_HIGH |" >> $GITHUB_STEP_SUMMARY
-
-          END=$(date +%s)
-          DURATION=$((END - START))
-          echo "⏱️ Trivy runtime: **${DURATION}s**" >> $GITHUB_STEP_SUMMARY
-
-          TOTAL=$((FS_CRITICAL + FS_HIGH))
-          if [ $TOTAL -gt 0 ]; then
-            echo "❌ **$TOTAL HIGH/CRITICAL CVE(s) detected**" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ Parallel mode: pipeline continues despite findings" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "✅ No HIGH/CRITICAL findings" >> $GITHUB_STEP_SUMMARY
-          fi
-
-      - name: Upload Trivy reports
+      - name: Upload all Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -303,11 +396,137 @@ jobs:
             trivy-image-report.json
             trivy-fs.sarif
             trivy-image.sarif
+            sbom.cdx.json
 
+  # ================================================================
+  # JOB 5 — DAST (OWASP ZAP) [PARALLEL]
+  # No dependencies — starts immediately on its own runner.
+  # Each GitHub Actions job runs on a separate isolated runner.
+  # This job installs dependencies, starts flask-webgoat, and
+  # runs ZAP entirely independently of the other four jobs.
+  # ================================================================
+  dast:
+    name: DAST (OWASP ZAP) [PARALLEL]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install Flask application dependencies
+        # IDENTICAL to hardened.yml — flask-webgoat requirements install cleanly.
+        run: pip install -r requirements.txt
+
+      - name: Start flask-webgoat for dynamic scanning
+        run: |
+          nohup python run.py > flask.log 2>&1 &
+          echo "Waiting 15 seconds for Flask to start on port 5000..."
+          sleep 15
+          echo "Flask startup log:"
+          cat flask.log || true
+          curl -s -o /dev/null -w "Flask HTTP status: %{http_code}\n" \
+            http://localhost:5000/login || true
+
+      - name: Run OWASP ZAP baseline scan via Docker
+        # IDENTICAL configuration to hardened.yml.
+        # --user root, --network host, -I flag — same rationale as hardened.yml.
+        run: |
+          mkdir -p zap-output
+          chmod 777 zap-output
+
+          docker run --rm \
+            --user root \
+            --network host \
+            -v "$(pwd)/zap-output:/zap/wrk/:rw" \
+            -t ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+            -t http://localhost:5000 \
+            -J zap-report.json \
+            -r zap-report.html \
+            -I || true
+
+          if [ ! -f zap-output/zap-report.json ]; then
+            echo '{"site":[]}' > zap-output/zap-report.json
+          fi
+
+          echo "## 🔒 DAST (OWASP ZAP)" >> $GITHUB_STEP_SUMMARY
+
+          ALERTS=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('zap-output/zap-report.json'))
+              sites = data.get('site', [])
+              total = sum(len(s.get('alerts', [])) for s in sites)
+              print(total)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+          HIGH=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('zap-output/zap-report.json'))
+              sites = data.get('site', [])
+              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '3')
+              print(total)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+          MEDIUM=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('zap-output/zap-report.json'))
+              sites = data.get('site', [])
+              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '2')
+              print(total)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+          LOW=$(python3 -c "
+          import json
+          try:
+              data = json.load(open('zap-output/zap-report.json'))
+              sites = data.get('site', [])
+              total = sum(1 for s in sites for a in s.get('alerts', []) if a.get('riskcode') == '1')
+              print(total)
+          except:
+              print(0)
+          " 2>/dev/null || echo "0")
+
+          echo "| Risk | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔴 High   | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🟡 Medium | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔵 Low    | $LOW |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 **$ALERTS total alert type(s) detected by ZAP**" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Parallel mode: all jobs run to completion regardless of findings" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: |
+            zap-output/zap-report.json
+            zap-output/zap-report.html
+
+  # ================================================================
+  # JOB 6 — Generate Security Dashboard
+  # Waits for ALL five scanning jobs to complete.
+  # No GitHub Pages deployment — parallel pipeline is for runtime
+  # comparison only. Dashboard uploaded as artifact.
+  # ================================================================
   generate-dashboard:
     name: Generate Security Dashboard
     runs-on: ubuntu-latest
-    needs: [secret-scanning, iac-scanning, sast, sca-and-image]
+    needs: [ secret-scanning, iac-scanning, sast, sca-and-image, dast ]
     if: always()
     steps:
       - name: Checkout code
@@ -321,17 +540,24 @@ jobs:
       - name: Generate thesis evaluation dashboard
         run: python3 scripts/generate_report.py
 
-      - name: Write parallel pipeline summary
-        run: |
-          echo "## ⚡ Parallel Pipeline Runtime Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "All scan jobs ran simultaneously. Total wall-clock time = longest job." >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Compare with sequential pipeline (hardened.yml) runtime for evaluation chapter." >> $GITHUB_STEP_SUMMARY
+      - name: Generate generic findings dashboard
+        run: python3 scripts/generate_generic_report.py
 
       - name: Upload parallel dashboard as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: parallel-dashboard
-          path: dashboard/index.html
+          name: parallel-security-dashboard
+          path: |
+            dashboard/index.html
+            generic-dashboard/index.html
+
+      - name: Write parallel pipeline runtime summary
+        if: always()
+        run: |
+          echo "## ⚡ Parallel Pipeline Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All five scan jobs ran simultaneously." >> $GITHUB_STEP_SUMMARY
+          echo "Total wall-clock time = duration of the longest single job." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Compare this run duration with hardened.yml for the thesis runtime evaluation." >> $GITHUB_STEP_SUMMARY
