@@ -22,9 +22,9 @@ from pathlib import Path
 # APPLICATION GROUND TRUTH — 14 known vulnerabilities in flask-webgoat
 # ================================================================
 GROUND_TRUTH = [
-    {"id":"V01","vulnerability":"SQL Injection (login)","file":"flask_webgoat/auth.py","line":17,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"auth.py","ruleset":"default"},
-    {"id":"V02","vulnerability":"SQL Injection (create_user)","file":"flask_webgoat/users.py","line":37,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"users.py","ruleset":"default"},
-    {"id":"V03","vulnerability":"Remote Code Execution","file":"flask_webgoat/actions.py","line":43,"cwe":"CWE-78","owasp":"A03:2021","tool":"semgrep","keywords":["subprocess-injection","subprocess-shell-true","dangerous-subprocess"],"file_match":"actions.py","ruleset":"default"},
+    {"id":"V01","vulnerability":"SQL Injection (login)","file":"flask_webgoat/auth.py","line":18,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"auth.py","ruleset":"default"},
+    {"id":"V02","vulnerability":"SQL Injection (create_user)","file":"flask_webgoat/users.py","line":38,"cwe":"CWE-89","owasp":"A03:2021","tool":"semgrep","keywords":["tainted-sql-string"],"file_match":"users.py","ruleset":"default"},
+    {"id":"V03","vulnerability":"Remote Code Execution","file":"flask_webgoat/actions.py","line":44,"cwe":"CWE-78","owasp":"A03:2021","tool":"semgrep","keywords":["subprocess-injection","subprocess-shell-true","dangerous-subprocess"],"file_match":"actions.py","ruleset":"default"},
     {"id":"V04","vulnerability":"Insecure Deserialization","file":"flask_webgoat/actions.py","line":61,"cwe":"CWE-502","owasp":"A08:2021","tool":"semgrep","keywords":["flask-insecure-deserialization-pickle"],"file_match":"actions.py","ruleset":"custom"},
     {"id":"V05","vulnerability":"Directory Traversal","file":"flask_webgoat/actions.py","line":32,"cwe":"CWE-22","owasp":"A01:2021","tool":"semgrep","keywords":["flask-path-traversal-string-concat"],"file_match":"actions.py","ruleset":"custom"},
     {"id":"V06","vulnerability":"Open Redirect","file":"flask_webgoat/auth.py","line":46,"cwe":"CWE-601","owasp":"A01:2021","tool":"semgrep","keywords":["flask-open-redirect-request-param"],"file_match":"auth.py","ruleset":"custom"},
@@ -32,7 +32,7 @@ GROUND_TRUTH = [
     {"id":"V08","vulnerability":"Broken Access Control (CORS)","file":"run.py","line":8,"cwe":"CWE-284","owasp":"A01:2021","tool":"semgrep","keywords":["flask-cors-wildcard-origin"],"file_match":"run.py","ruleset":"custom"},
     {"id":"V09","vulnerability":"Security Misconfiguration (CSP)","file":"run.py","line":10,"cwe":"CWE-16","owasp":"A05:2021","tool":"semgrep","keywords":["flask-csp-unsafe-inline"],"file_match":"run.py","ruleset":"custom"},
     {"id":"V10","vulnerability":"Security Misconfiguration (debug=True)","file":"run.py","line":15,"cwe":"CWE-94","owasp":"A05:2021","tool":"semgrep","keywords":["flask-debug-mode-enabled"],"file_match":"run.py","ruleset":"custom"},
-    {"id":"V11","vulnerability":"Hardcoded Secret Key","file":"flask_webgoat/__init__.py","line":13,"cwe":"CWE-798","owasp":"A02:2021","tool":"gitleaks","keywords":["secret","generic-api-key"],"file_match":"__init__.py","ruleset":"default"},
+    {"id":"V11","vulnerability":"Hardcoded Secret Key","file":"flask_webgoat/__init__.py","line":None,"cwe":"CWE-798","owasp":"A02:2021","tool":"gitleaks","keywords":["secret","generic-api-key"],"file_match":"__init__.py","ruleset":"default"},
     {"id":"V12","vulnerability":"Outdated Flask 1.1.2","file":"requirements.txt","line":None,"cwe":"CVE-2023-30861","owasp":"A06:2021","tool":"trivy","keywords":["CVE-2023-30861","flask"],"file_match":"requirements.txt","ruleset":"default"},
     {"id":"V13","vulnerability":"Outdated Jinja2 2.11.3 (MEDIUM — below threshold)","file":"requirements.txt","line":None,"cwe":"CVE-2024-22195","owasp":"A06:2021","tool":"trivy","keywords":["jinja2"],"file_match":"requirements.txt","ruleset":"default"},
     {"id":"V14","vulnerability":"Outdated Werkzeug 1.0.1","file":"requirements.txt","line":None,"cwe":"CVE-2023-25577","owasp":"A06:2021","tool":"trivy","keywords":["werkzeug","CVE-2023-25577"],"file_match":"requirements.txt","ruleset":"default"},
@@ -325,6 +325,10 @@ def load_runtime_data():
     return {
         "pipelines": {
             "baseline": {
+                # TODO: replace mean/std_dev/cv/runs below with the real n=10 baseline
+                # measurement (Docker-build-only; safe to re-run — no security tools).
+                # Then recompute parallel/sequential overhead = their mean minus this mean,
+                # and update thesis 5.5 + Abstract/Chapter 1 to match.
                 "mean": 35.5,
                 "std_dev": 7.6,
                 "min": 29,
@@ -663,7 +667,7 @@ new Chart(document.getElementById('runtimeBarChart'), {{
         line_str = str(gt["line"]) if gt["line"] else "—"
         missed_note = ""
         if not detected and "below threshold" in gt["vulnerability"].lower():
-            missed_note = '<br><small class="text-muted">CVEs classified as MEDIUM by NVD — below HIGH/CRITICAL threshold</small>'
+            missed_note = '<br><small class="text-muted">Rated MEDIUM by Trivy (CVSS 5.4) — below the configured HIGH/CRITICAL threshold</small>'
         gt_rows += f"""
         <tr>
             <td><strong>{gt["id"]}</strong></td>

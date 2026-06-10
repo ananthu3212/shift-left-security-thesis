@@ -66,13 +66,14 @@ def parse_semgrep(data):
             cwe = metadata["cwe"][0] if metadata["cwe"] else ""
         elif isinstance(metadata.get("cwe"), str):
             cwe = metadata["cwe"]
-        owasp = CWE_TO_OWASP.get(cwe.split(":")[0] if ":" in cwe else cwe, "")
+        # Prefer the rule's own OWASP 2021 metadata; fall back to the CWE map, then any entry.
+        owasp_meta = metadata.get("owasp", "")
+        owasp_list = owasp_meta if isinstance(owasp_meta, list) else ([owasp_meta] if owasp_meta else [])
+        owasp = next((e for e in owasp_list if "2021" in e), "")
         if not owasp:
-            owasp_meta = metadata.get("owasp", "")
-            if isinstance(owasp_meta, list):
-                owasp = owasp_meta[0] if owasp_meta else "Uncategorised"
-            else:
-                owasp = owasp_meta or "Uncategorised"
+            owasp = CWE_TO_OWASP.get(cwe.split(":")[0] if ":" in cwe else cwe, "")
+        if not owasp:
+            owasp = owasp_list[0] if owasp_list else "Uncategorised"
         findings.append({
             "rule": rule_id.split(".")[-1],
             "rule_full": rule_id,
