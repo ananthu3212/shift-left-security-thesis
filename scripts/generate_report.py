@@ -325,17 +325,15 @@ def load_runtime_data():
     return {
         "pipelines": {
             "baseline": {
-                # TODO: replace mean/std_dev/cv/runs below with the real n=10 baseline
-                # measurement (Docker-build-only; safe to re-run — no security tools).
-                # Then recompute parallel/sequential overhead = their mean minus this mean,
-                # and update thesis 5.5 + Abstract/Chapter 1 to match.
-                "mean": 35.5,
-                "std_dev": 7.6,
-                "min": 29,
-                "max": 55,
-                "cv": 21.4,
-                # n=10 actual baseline runs (Docker build only, no security tools)
-                "runs": [29, 31, 32, 33, 34, 34, 35, 36, 36, 55]
+                # n=10 actual baseline runs #74-#83 (Docker build only, no security
+                # tools; safe to re-run, no version drift). Sample SD (n-1), matching
+                # the parallel/sequential convention. Overheads recomputed off this mean.
+                "mean": 36.3,
+                "std_dev": 7.7,
+                "min": 30,
+                "max": 56,
+                "cv": 21.2,
+                "runs": [36, 30, 30, 32, 36, 32, 33, 56, 40, 38]
             },
             "parallel": {
                 "mean": 191.0,
