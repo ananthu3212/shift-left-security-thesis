@@ -325,15 +325,13 @@ def load_runtime_data():
     return {
         "pipelines": {
             "baseline": {
-                # n=10 actual baseline runs #74-#83 (Docker build only, no security
-                # tools; safe to re-run, no version drift). Sample SD (n-1), matching
-                # the parallel/sequential convention. Overheads recomputed off this mean.
-                "mean": 36.3,
-                "std_dev": 7.7,
-                "min": 30,
-                "max": 56,
-                "cv": 21.2,
-                "runs": [36, 30, 30, 32, 36, 32, 33, 56, 40, 38]
+                "mean": 35.5,
+                "std_dev": 7.6,
+                "min": 29,
+                "max": 55,
+                "cv": 21.4,
+                # n=10 actual baseline runs #31-#40, 13 May 2026 (Docker build only, no security tools)
+                "runs": [34, 32, 30, 55, 32, 30, 38, 37, 38, 29]
             },
             "parallel": {
                 "mean": 191.0,
@@ -665,7 +663,7 @@ new Chart(document.getElementById('runtimeBarChart'), {{
         line_str = str(gt["line"]) if gt["line"] else "—"
         missed_note = ""
         if not detected and "below threshold" in gt["vulnerability"].lower():
-            missed_note = '<br><small class="text-muted">Rated MEDIUM by Trivy (CVSS 5.4) — below the configured HIGH/CRITICAL threshold</small>'
+            missed_note = '<br><small class="text-muted">CVEs classified as MEDIUM by NVD — below HIGH/CRITICAL threshold</small>'
         gt_rows += f"""
         <tr>
             <td><strong>{gt["id"]}</strong></td>
