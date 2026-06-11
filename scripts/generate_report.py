@@ -656,7 +656,7 @@ new Chart(document.getElementById('runtimeBarChart'), {{
         ruleset = r["detected_by_ruleset"] or gt["ruleset"]
         badge_detected = '<span class="badge bg-success">✓ Detected</span>' if detected else '<span class="badge bg-danger">✗ Missed</span>'
         ruleset_badge = ""
-        if detected:
+        if detected and gt["tool"] == "semgrep":
             if ruleset == "custom":
                 ruleset_badge = '<span class="badge bg-warning text-dark ms-1">custom rule</span>'
             else:
