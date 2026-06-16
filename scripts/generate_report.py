@@ -938,9 +938,9 @@ new Chart(document.getElementById('runtimeBarChart'), {{
   <h5 class="section-title">🔒 DAST Results — OWASP ZAP 2.17.0 (Baseline Scan)</h5>
   <p class="text-muted small mb-3">
     OWASP ZAP performed a baseline scan against the running flask-webgoat application
-    at <code>http://localhost:5000</code> using the Automation Framework.
-    The baseline scan mode performs passive analysis and selected active probes
-    without aggressive fuzzing. ZAP dynamically confirmed CORS misconfiguration (V08)
+    at <code>http://localhost:5000</code> using the <code>zap-baseline.py</code> script.
+    The baseline scan spiders the application and passively analyses the HTTP responses,
+    with no active injection phase. ZAP dynamically confirmed CORS misconfiguration (V08)
     and CSP unsafe-inline (V09) via HTTP response header inspection — both of which
     were also detected statically by Semgrep custom rules. SQL injection (V01, V02),
     RCE (V03), and insecure deserialization (V04) are not detectable by passive DAST
