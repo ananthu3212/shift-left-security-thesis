@@ -1,0 +1,11 @@
+.git
+.venv
+venv
+terraform
+*.tf
+__pycache__
+*.pyc
+.idea
+.pytest_cache
+evaluation
+*.log

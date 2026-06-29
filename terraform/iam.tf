@@ -1,9 +1,9 @@
 # ============================================================
-# IAM — ECS TASK EXECUTION ROLE
+# IAM - ECS TASK EXECUTION ROLE
 # ============================================================
 resource "aws_iam_role" "execution_role" {
   name        = "${var.project_name}-execution-role"
-  description = "ECS task execution role — used by Fargate agent, not the app"
+  description = "ECS task execution role - used by Fargate agent, not the app"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -20,7 +20,7 @@ resource "aws_iam_role" "execution_role" {
 }
 
 # AVD-AWS-0057: tfsec flags logs:CreateLogStream as sensitive.
-# This is a false positive — it is the minimum permission required
+# This is a false positive - it is the minimum permission required
 # for ECS Fargate to write container logs to CloudWatch Logs.
 # Scoped to the specific log group ARN, not a wildcard.
 #tfsec:ignore:AVD-AWS-0057
@@ -86,11 +86,11 @@ resource "aws_iam_role_policy" "execution_policy" {
 }
 
 # ============================================================
-# IAM — ECS TASK ROLE
+# IAM - ECS TASK ROLE
 # ============================================================
 resource "aws_iam_role" "task_role" {
   name        = "${var.project_name}-task-role"
-  description = "ECS task role — used by the Flask app at runtime"
+  description = "ECS task role - used by the Flask app at runtime"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -107,7 +107,7 @@ resource "aws_iam_role" "task_role" {
 }
 
 # ============================================================
-# IAM — GITHUB ACTIONS OIDC
+# IAM - GITHUB ACTIONS OIDC
 # ============================================================
 resource "aws_iam_openid_connect_provider" "github" {
   url             = "https://token.actions.githubusercontent.com"
@@ -117,7 +117,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 resource "aws_iam_role" "github_actions" {
   name        = "${var.project_name}-github-actions-role"
-  description = "Role assumed by GitHub Actions via OIDC — no static keys"
+  description = "Role assumed by GitHub Actions via OIDC - no static keys"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

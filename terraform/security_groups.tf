@@ -1,5 +1,5 @@
 # ============================================================
-# SECURITY GROUPS — defined first without rules
+# SECURITY GROUPS - defined first without rules
 # Rules are added separately to avoid circular references
 # ============================================================
 
@@ -15,7 +15,7 @@ resource "aws_security_group" "alb" {
 
 resource "aws_security_group" "tasks" {
   name        = "${var.project_name}-sg-tasks"
-  description = "Security group for Fargate tasks — ingress from ALB only"
+  description = "Security group for Fargate tasks - ingress from ALB only"
   vpc_id      = aws_vpc.main.id
 
   tags = {
@@ -25,7 +25,7 @@ resource "aws_security_group" "tasks" {
 
 resource "aws_security_group" "vpce" {
   name        = "${var.project_name}-sg-vpce"
-  description = "Security group for VPC endpoints — ingress from Fargate tasks only"
+  description = "Security group for VPC endpoints - ingress from Fargate tasks only"
   vpc_id      = aws_vpc.main.id
 
   tags = {
@@ -47,7 +47,7 @@ resource "aws_security_group" "vpce" {
 resource "aws_security_group_rule" "alb_ingress_http" {
   type              = "ingress"
   security_group_id = aws_security_group.alb.id
-  description       = "HTTP from internet — ALB is intentional public entry point"
+  description       = "HTTP from internet - ALB is intentional public entry point"
   from_port         = 80
   to_port           = 80
   protocol          = "tcp"
@@ -82,6 +82,47 @@ resource "aws_security_group_rule" "tasks_egress_vpce" {
   to_port                  = 443
   protocol                 = "tcp"
   source_security_group_id = aws_security_group.vpce.id
+}
+
+# DNS resolution: the Fargate task must reach the VPC resolver
+# (AmazonProvidedDNS, inside the VPC CIDR) on port 53 to resolve
+# the interface-endpoint hostnames to their private IPs. Without
+# this, ECR resolves to a public address the task cannot reach
+# with no NAT, and the image pull fails.
+resource "aws_security_group_rule" "tasks_egress_dns_udp" {
+  type              = "egress"
+  security_group_id = aws_security_group.tasks.id
+  description       = "DNS resolution to VPC resolver (UDP)"
+  from_port         = 53
+  to_port           = 53
+  protocol          = "udp"
+  cidr_blocks       = [var.vpc_cidr]
+}
+
+resource "aws_security_group_rule" "tasks_egress_dns_tcp" {
+  type              = "egress"
+  security_group_id = aws_security_group.tasks.id
+  description       = "DNS resolution to VPC resolver (TCP fallback)"
+  from_port         = 53
+  to_port           = 53
+  protocol          = "tcp"
+  cidr_blocks       = [var.vpc_cidr]
+}
+
+# ECR image layers are stored in S3 and fetched through the S3
+# gateway endpoint. The gateway endpoint is reached by routing,
+# but the task egress security group must still permit outbound
+# 443 to the S3 service IP ranges via its managed prefix list.
+# Without this rule the layer fetch is blocked at the security
+# group even though the route exists, and the pull never starts.
+resource "aws_security_group_rule" "tasks_egress_s3" {
+  type              = "egress"
+  security_group_id = aws_security_group.tasks.id
+  description       = "HTTPS to S3 gateway endpoint for ECR image layers"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  prefix_list_ids   = ["pl-6ea54007"]
 }
 
 resource "aws_security_group_rule" "vpce_ingress_tasks" {

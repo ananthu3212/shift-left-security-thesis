@@ -1,5 +1,5 @@
 # ============================================================
-# KMS KEY — SECRETS MANAGER ENCRYPTION
+# KMS KEY - SECRETS MANAGER ENCRYPTION
 # Fix for AVD-AWS-0098: Secrets Manager must use a customer-
 # managed key instead of the AWS default key for:
 # - Full auditability of secret access via CloudTrail
@@ -7,7 +7,7 @@
 # - Automatic annual key rotation
 # ============================================================
 resource "aws_kms_key" "secrets" {
-  description             = "KMS key for Secrets Manager encryption — fix AVD-AWS-0098"
+  description             = "KMS key for Secrets Manager encryption - fix AVD-AWS-0098"
   deletion_window_in_days = 7
   enable_key_rotation     = true
 
@@ -23,13 +23,13 @@ resource "aws_kms_alias" "secrets" {
 
 # ============================================================
 # SECRETS MANAGER
-# Flask application secret key — injected at runtime via
+# Flask application secret key - injected at runtime via
 # ECS task definition secrets block.
 # Now encrypted with a customer-managed KMS key.
 # ============================================================
 resource "aws_secretsmanager_secret" "app_secret_key" {
   name        = "${var.project_name}/flask-secret-key"
-  description = "Flask application SECRET_KEY — injected at runtime via ECS secrets block"
+  description = "Flask application SECRET_KEY - injected at runtime via ECS secrets block"
   kms_key_id  = aws_kms_key.secrets.arn
 
   recovery_window_in_days = 0

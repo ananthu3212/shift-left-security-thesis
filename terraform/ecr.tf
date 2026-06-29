@@ -1,5 +1,5 @@
 # ============================================================
-# KMS KEY — ECR ENCRYPTION
+# KMS KEY - ECR ENCRYPTION
 # ============================================================
 resource "aws_kms_key" "ecr" {
   description             = "KMS key for ECR repository encryption"
@@ -17,11 +17,11 @@ resource "aws_kms_alias" "ecr" {
 }
 
 # ============================================================
-# KMS KEY — CLOUDWATCH LOGS ENCRYPTION
+# KMS KEY - CLOUDWATCH LOGS ENCRYPTION
 # Fix for AVD-AWS-0017: CloudWatch Log Group must be encrypted
 # with a customer-managed key for auditability and key rotation.
 # A dedicated key is used (not the ECR key) to follow the
-# principle of key separation — different resources use
+# principle of key separation - different resources use
 # different encryption keys to limit blast radius.
 #
 # The key policy grants the CloudWatch Logs service principal
@@ -30,7 +30,7 @@ resource "aws_kms_alias" "ecr" {
 # if the log group specifies it.
 # ============================================================
 resource "aws_kms_key" "logs" {
-  description             = "KMS key for CloudWatch Logs encryption — fix AVD-AWS-0017"
+  description             = "KMS key for CloudWatch Logs encryption - fix AVD-AWS-0017"
   deletion_window_in_days = 7
   enable_key_rotation     = true
 

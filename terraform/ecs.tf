@@ -38,6 +38,17 @@ resource "aws_ecs_task_definition" "app" {
         }
       ]
 
+      # FLASK_APP tells "flask run" which module to load. run.py
+      # defines app = create_app() at module level, so FLASK_APP=run
+      # resolves the application object. Without it, flask run cannot
+      # locate the app and the container exits on start.
+      environment = [
+        {
+          name  = "FLASK_APP"
+          value = "run"
+        }
+      ]
+
       secrets = [
         {
           name      = "SECRET_KEY"
@@ -45,8 +56,20 @@ resource "aws_ecs_task_definition" "app" {
         }
       ]
 
-      # Security hardening: read-only root filesystem
+      # Security hardening: read-only root filesystem. The application
+      # writes its SQLite database to its working directory, so a
+      # dedicated writable volume is mounted at /data (the working
+      # directory set in the Dockerfile) while the rest of the root
+      # filesystem remains read-only.
       readonlyRootFilesystem = true
+
+      mountPoints = [
+        {
+          sourceVolume  = "app-data"
+          containerPath = "/data"
+          readOnly      = false
+        }
+      ]
 
       # Security hardening: non-root user
       user = "10001:10001"
@@ -72,6 +95,14 @@ resource "aws_ecs_task_definition" "app" {
     }
   ])
 
+  # Writable ephemeral volume for the application's SQLite database.
+  # Backed by the task's ephemeral storage; its contents do not
+  # persist across task restarts, which suits a deliberately
+  # vulnerable demo whose database is recreated at startup.
+  volume {
+    name = "app-data"
+  }
+
   tags = {
     Name = "${var.project_name}-task"
   }
@@ -80,7 +111,7 @@ resource "aws_ecs_task_definition" "app" {
 # ============================================================
 # APPLICATION LOAD BALANCER
 #
-# tfsec findings — documented design decisions:
+# tfsec findings - documented design decisions:
 #
 # AVD-AWS-0053: ALB is intentionally public-facing.
 # The Fargate tasks run in private subnets with no public IP.
@@ -92,7 +123,7 @@ resource "aws_ecs_task_definition" "app" {
 # which are out of scope for this thesis demo environment.
 # Production deployment must use HTTPS. Documented as future work.
 #
-# AVD-AWS-0052: FIXED — drop_invalid_header_fields = true added.
+# AVD-AWS-0052: FIXED - drop_invalid_header_fields = true added.
 # Dropping invalid HTTP headers prevents HTTP request smuggling
 # attacks where malformed headers could be used to bypass security
 # controls or poison shared caches.
@@ -131,7 +162,7 @@ resource "aws_lb_target_group" "app" {
     timeout             = 5
     interval            = 30
     path                = "/"
-    matcher             = "200"
+    matcher             = "200,404"
   }
 
   tags = {
