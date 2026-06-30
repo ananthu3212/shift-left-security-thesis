@@ -25,7 +25,7 @@ methodology:
 | `deserialization.yaml` | `flask-insecure-deserialization-pickle` | `pickle.loads()` inside a Flask route | CWE-502 | A08:2021 | V04 | Primary |
 | `path-traversal.yaml` | `flask-path-traversal-string-concat` | Path built from concatenated user input | CWE-22 | A01:2021 | V05 | Primary |
 | `open-redirect.yaml` | `flask-open-redirect-request-param` | `redirect()` with an unvalidated request parameter | CWE-601 | A01:2021 | V06 | Primary |
-| `sensitive-data-exposure.yaml` | `sqlite-trace-callback-data-exposure` | SQLite `set_trace_callback(print)` logs all queries | CWE-200 | A02:2021 | V07 | Primary |
+| `sensitive-data-exposure.yaml` | `sqlite-trace-callback-data-exposure` | SQLite `set_trace_callback(print)` logs all queries | CWE-200 | A01:2021 | V07 | Primary |
 | `cors-wildcard.yaml` | `flask-cors-wildcard-origin` | `Access-Control-Allow-Origin` set to `*` | CWE-284 | A01:2021 | V08 | Primary |
 | `csp-unsafe-inline.yaml` | `flask-csp-unsafe-inline` | Content-Security-Policy permits `unsafe-inline` | CWE-16 | A05:2021 | V09 | Primary |
 | `flask-debug-mode.yaml` | `flask-debug-mode-enabled` | `app.run(debug=True)` enabled | CWE-489 | A05:2021 | V10 | Primary |
