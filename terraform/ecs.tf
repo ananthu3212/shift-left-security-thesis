@@ -170,8 +170,12 @@ resource "aws_lb_target_group" "app" {
   }
 }
 
-# tfsec:ignore:AVD-AWS-0054 -- HTTP intentional for thesis demo.
-# Production requires HTTPS with ACM certificate. Future work.
+# AVD-AWS-0054 (plain-HTTP listener) is INTENTIONALLY LEFT ACTIVE — it is
+# deliberately NOT suppressed, unlike the other classified findings. It
+# stands as a transparent record of an unresolved CRITICAL limitation
+# (no HTTPS, for want of a registered domain and ACM certificate in the
+# demo environment) and as a live demonstration that the pipeline still
+# surfaces a genuine critical misconfiguration. Production requires HTTPS.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80

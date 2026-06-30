@@ -1,60 +1,74 @@
 # Custom Semgrep Rules
 
-This directory contains custom Semgrep rules developed for this thesis.
-They target vulnerability patterns that the default `p/python` community
-ruleset does not detect.
+This directory contains the custom Semgrep rules developed for the thesis
+*Shift-Left Security in CI/CD Pipelines*. They target vulnerability
+patterns that the default `p/python` community ruleset does not detect.
+
+There are **nine** custom rules in total. They were developed in two
+stages, following the build–evaluate–redesign loop of the thesis
+methodology:
+
+- **Seven** rules were written first, against the deliberately vulnerable
+  flask-webgoat application, to detect ground-truth items V04–V10.
+- **Two** further rules — `ssti-fstring.yaml` and
+  `jwt-insecure-decode.yaml` — were added after the portability
+  evaluation, which exposed vulnerability patterns the first seven rules
+  did not cover. These two do not fire on flask-webgoat; they target
+  patterns found only in the wider portability sample.
 
 ---
 
 ## Rule overview
 
-| Rule file | Vulnerability | CWE | OWASP | Portability |
-|---|---|---|---|---|
-| `deserialization.yaml` | Insecure use of `pickle.loads()` inside a Flask route | CWE-502 | A08:2021 | ✅ Any Flask app |
-| `open-redirect.yaml` | `redirect()` called with unvalidated request parameter | CWE-601 | A01:2021 | ✅ Any Flask app |
-| `cors-wildcard.yaml` | `Access-Control-Allow-Origin` set to `*` | CWE-284 | A01:2021 | ✅ Any Flask app |
-| `csp-unsafe-inline.yaml` | Content-Security-Policy permits `unsafe-inline` | CWE-16 | A05:2021 | ✅ Any Flask app |
-| `flask-debug-mode.yaml` | `app.run(debug=True)` enabled | CWE-94 | A05:2021 | ✅ Any Flask app |
-| `sensitive-data-exposure.yaml` | SQLite `set_trace_callback(print)` logs all queries | CWE-200 | A02:2021 | ✅ Any SQLite app |
-| `path-traversal.yaml` | Path constructed by concatenating user input | CWE-22 | A01:2021 | ⚠️ Pattern-specific |
+| Rule file | Rule ID | Vulnerability | CWE | OWASP    | Ground truth | Stage |
+|---|---|---|---|----------|---|---|
+| `deserialization.yaml` | `flask-insecure-deserialization-pickle` | `pickle.loads()` inside a Flask route | CWE-502 | A08:2021 | V04 | Primary |
+| `path-traversal.yaml` | `flask-path-traversal-string-concat` | Path built from concatenated user input | CWE-22 | A01:2021 | V05 | Primary |
+| `open-redirect.yaml` | `flask-open-redirect-request-param` | `redirect()` with an unvalidated request parameter | CWE-601 | A01:2021 | V06 | Primary |
+| `sensitive-data-exposure.yaml` | `sqlite-trace-callback-data-exposure` | SQLite `set_trace_callback(print)` logs all queries | CWE-200 | A02:2021 | V07 | Primary |
+| `cors-wildcard.yaml` | `flask-cors-wildcard-origin` | `Access-Control-Allow-Origin` set to `*` | CWE-284 | A01:2021 | V08 | Primary |
+| `csp-unsafe-inline.yaml` | `flask-csp-unsafe-inline` | Content-Security-Policy permits `unsafe-inline` | CWE-16 | A05:2021 | V09 | Primary |
+| `flask-debug-mode.yaml` | `flask-debug-mode-enabled` | `app.run(debug=True)` enabled | CWE-489 | A05:2021 | V10 | Primary |
+| `ssti-fstring.yaml` | `flask-ssti-dynamic-template` | `render_template_string` with a non-literal template | CWE-94 | A03:2021 | — | Portability |
+| `jwt-insecure-decode.yaml` | `flask-jwt-insecure-decode` | `jwt.decode(..., verify=False)` disables signature checks | CWE-347 | A02:2021 | — | Portability |
+
+The seven primary rules each map to one flask-webgoat ground-truth item
+(V04–V10). The two portability rules target patterns absent from
+flask-webgoat and therefore carry no flask-webgoat ground-truth ID; they
+are exercised against the independent applications in the portability
+evaluation.
 
 ---
 
-## Portability notes
+## Scope and limitations of the rules
 
-Six of the seven rules are generic and apply to any Python Flask
-application. They detect vulnerability classes, not project-specific
-code patterns.
+These rules detect vulnerability *classes* rather than memorised
+project-specific instances: the same rule fires on the same insecure
+pattern in code it was never written against. That said, each rule is
+bounded to the specific pattern it encodes, and this boundary is real
+rather than incidental.
 
-The `path-traversal.yaml` rule matches a specific two-line pattern
-found in flask-webgoat. When adopting this pipeline for another
-project, either:
+Two consequences follow, both observed in the thesis evaluation:
 
-- Use it as a template and adapt the pattern to your codebase
-- Replace it with a broader path traversal rule using:
+- A rule does not fire where a framework expresses the same weakness
+  through a construct the pattern does not match. For example,
+  `ssti-fstring.yaml` matches the `render_template_string` sink but not
+  a template injection built with `jinja2.Template`; the latter is a
+  documented miss.
+- Pattern-based static analysis of this kind cannot reach authorisation
+  or business-logic weaknesses, such as broken access control or
+  insecure direct object references, which have no fixed syntactic
+  signature.
 
-```yaml
-rules:
-  - id: generic-path-traversal
-    patterns:
-      - pattern: Path($A + $SEP + $B)
-      - pattern-inside: |
-          @$APP.route(...)
-          def $FUNC(...):
-            ...
-    message: >
-      Path constructed using string concatenation inside a Flask route.
-      Validate and resolve against a known base directory.
-    languages: [python]
-    severity: ERROR
-    metadata:
-      cwe: "CWE-22"
-      owasp: "A01:2021 - Broken Access Control"
-```
+The rules are therefore best understood as class-targeted but
+pattern-bounded. Adopting them for another project, or another
+framework, requires adapting or extending the patterns to that
+project's own routing and sinks; the rules provide no detection for a
+pattern they do not encode.
 
 ---
 
-## How to write rules for your project
+## Rule structure
 
 Each rule follows this structure:
 
@@ -71,8 +85,9 @@ rules:
       owasp: "AXX:2021"
 ```
 
-For rules with multiple conditions use `patterns:` with
-`pattern:` and `pattern-inside:` clauses.
+Rules with more than one condition use `patterns:` with `pattern:`,
+`pattern-inside:`, `pattern-not:`, or `metavariable-regex:` clauses, as
+several of the rules in this directory do.
 
 Full syntax reference:
 https://semgrep.dev/docs/writing-rules/rule-syntax/

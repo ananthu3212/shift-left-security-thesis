@@ -7,12 +7,12 @@ rules:
       usernames, passwords and other sensitive data in application logs.
       Remove the trace callback or redirect it to a secure, access-controlled
       logging system that masks sensitive values.
-      CWE-200 / OWASP A01:2021 - Broken Access Control.
+      CWE-200 / OWASP A02:2021 - Cryptographic Failures.
     languages: [python]
     severity: ERROR
     metadata:
       cwe: "CWE-200"
-      owasp: "A01:2021 - Broken Access Control"
+      owasp: "A02:2021 - Cryptographic Failures"
       ground-truth-id: "V07"
       confidence: HIGH
       thesis: "Shift-Left Security in CI/CD Pipelines"
